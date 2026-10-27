@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>房间照片定位 · Room Locate</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/plotly.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="header"><div class="brand"><span class="brand-icon" aria-hidden="true">⌖</span><div>ROOM LOCATE<small>房间照片定位</small></div></div><div class="local-tag"><span></span>本机处理 · 照片无需上传到云端</div></header>
+  <main>
+    <div class="intro"><div><p class="eyebrow">VISUAL LOCALIZATION</p><h1>把照片，放回房间里。</h1><p class="subtitle">选择一张房间照片，在三维模型里找到拍照的位置与方向。</p></div><div class="room-status"><span class="status-dot" id="statusDot"></span><div><b id="roomStatus">正在准备房间</b><small id="roomDetail">首次使用会自动建立参考库</small></div></div></div>
+    <section class="room-toolbar" id="roomToolbar" hidden aria-label="房间管理">
+      <div class="room-picker"><label for="roomSelect">当前房间</label><select id="roomSelect" aria-label="选择房间"><option value="">还没有房间</option></select></div>
+      <p>上传一次，保存参考库。之后直接切换房间。</p>
+      <button id="addRoom" class="add-room-button" type="button"><span aria-hidden="true">＋</span> 添加房间</button>
+    </section>
+    <div class="workspace">
+      <aside class="sidebar">
+        <section class="card input-card">
+          <div class="section-title"><span class="step">01</span><h2>放入照片</h2><span class="filetypes">JPG / PNG / HEIC</span></div>
+          <input id="photoInput" type="file" accept="image/jpeg,image/png,image/heic,image/heif,.heic,.heif" hidden>
+          <button id="dropzone" class="dropzone" type="button" aria-label="选择或拖入房间照片">
+            <div id="dropPrompt"><svg width="42" height="42" viewBox="0 0 42 42" fill="none" aria-hidden="true"><rect x="5" y="11" width="32" height="25" rx="5" stroke="currentColor" stroke-width="1.5"/><path d="M13 11l3-5h10l3 5" stroke="currentColor" stroke-width="1.5"/><circle cx="21" cy="23" r="7" stroke="currentColor" stroke-width="1.5"/></svg><strong>点击选择，或拖入照片</strong><small>拍到家具、门窗等清晰细节，更容易定位</small></div>
+            <img id="photoPreview" alt="选中的房间照片" hidden>
+            <span id="changePhoto" class="change-photo" hidden>更换照片</span>
+          </button>
+          <div class="file-row"><span id="filename">尚未选择照片</span><span id="fileSize"></span></div>
+          <details class="camera-settings" id="cameraSettings"><summary>相机参数 <span id="cameraModeLabel">自动估算</span></summary>
+            <label class="setting-label" for="cameraMode">定位时使用</label>
+            <select id="cameraMode"><option value="auto">自动读取 / 估算焦距</option><option value="dataset" id="datasetOption" disabled>7-Scenes 数据集参数（近似）</option><option value="saved" id="savedOption" disabled>已保存的标定参数</option></select>
+            <p id="cameraHelp">优先使用照片中的焦距信息。自动模式的参数为估算值，可导入标定参数提高可靠性。</p>
+            <input id="calibrationInput" type="file" accept=".json,application/json" hidden>
+            <button id="importCalibration" type="button" class="text-button">导入相机参数 JSON ↗</button>
+            <small id="calibrationStatus" class="calibration-status"></small>
+          </details>
+          <button id="localizeButton" class="primary-button" disabled type="button"><span id="localizeLabel">定位这张照片</span><span aria-hidden="true">↗</span></button>
+          <div id="progressWrap" class="progress-wrap" hidden><div class="progress-track"><span id="progressBar"></span></div><p id="progressText" role="status" aria-live="polite"></p></div>
+          <div class="sample-row">还没有准备照片？<button id="sampleButton" class="text-button" disabled type="button">试用示例照片 →</button></div>
+          <p id="errorMessage" class="error-message" role="alert" hidden></p>
+        </section>
+        <section class="card result-card" id="resultCard" hidden>
+          <div class="section-title"><span class="step">02</span><h2 id="resultTitle">找到拍照位置</h2><span class="success-icon" id="successIcon">✓</span></div>
+          <div id="successContent">
+            <p class="result-caption">房间坐标 · 米</p>
+            <div class="coordinates"><div><small>X</small><b id="posX">—</b></div><div><small>Y</small><b id="posY">—</b></div><div><small>Z</small><b id="posZ">—</b></div></div>
+            <p id="resultQuality" class="result-quality"></p>
+            <p id="cameraNote" class="camera-note"></p>
+            <div class="downloads"><a id="downloadModel" class="download-button" download="room_with_camera.glb">下载带位置的模型 ↓</a><a id="downloadPose" class="text-button" download="camera_pose.json">位姿 JSON</a></div>
+            <a id="openViewer" class="viewer-link" target="_blank" rel="noopener">打开独立三维页面 ↗</a>
+          </div>
+          <div id="failureContent" hidden><p>这张照片没有找到足够可靠的对应点。</p><p>试着拍清晰的家具、门窗或墙上图案，避免只拍白墙、镜面和近距离物体。</p><small id="failureReason"></small></div>
+        </section>
+      </aside>
+      <section class="viewer-card" aria-label="三维房间与拍照位置">
+        <div class="viewer-header"><div><span class="viewer-dot"></span><b id="roomName">你的房间</b><span class="view-badge">3D VIEW</span></div><div class="view-tools"><button id="resetView" title="重置视角" type="button">重置视角</button><button id="focusView" type="button" disabled>查看拍照位置</button></div></div>
+        <div class="viewer-body"><div id="scene" role="img" aria-label="可旋转缩放的三维房间模型"></div><div id="sceneLoading" class="scene-loading"><span class="spinner"></span><b>正在加载房间模型</b><small>房间准备好后就可以开始定位</small></div><div id="sceneHint" class="scene-hint">放入照片后，红色相机会标出拍照的位置</div></div>
+        <div class="viewer-footer"><div class="legend"><span class="red-dot"></span>拍照位置与镜头朝向</div><div class="viewer-options"><label>显示配色<select id="colorMode" aria-label="模型显示配色"><option value="original">真实颜色</option><option value="levels">层次配色</option></select></label><label><input type="checkbox" id="showReferences">显示扫描位置</label><label class="opacity-control">不透明度<input id="opacity" type="range" min="0.15" max="1" step="0.05" value="0.90" aria-label="模型不透明度"></label></div></div>
+        <div class="viewer-tips">拖动旋转 · 滚轮缩放 · 按住 Shift 拖动平移</div>
+      </section>
+    </div>
+    <footer>ROOM MAP · POLYCAM / 7-SCENES <span>照片定位结果保存在本机项目的 outputs 文件夹。</span></footer>
+  </main>
+  <dialog id="roomDialog" class="room-dialog" aria-labelledby="roomDialogTitle">
+    <form id="roomForm">
+      <div class="dialog-heading"><div><p class="eyebrow">NEW ROOM</p><h2 id="roomDialogTitle">建立你的房间参考库</h2></div><button id="closeRoomDialog" class="close-dialog" type="button" aria-label="关闭添加房间">×</button></div>
+      <p class="dialog-intro">上传房间模型与带相机信息的参考照片，准备完成后即可用新照片定位。</p>
+      <label class="field-label" for="newRoomName">房间名称</label><input id="newRoomName" class="text-input" type="text" maxlength="80" placeholder="例如：我的卧室、实验室">
+      <div class="room-files">
+        <label class="upload-tile" for="roomModelInput"><span class="upload-symbol" aria-hidden="true">◇</span><strong>三维模型</strong><small>GLB · 最大 512 MB</small><span class="selected-file" id="roomModelName">点击选择模型</span><input id="roomModelInput" type="file" accept=".glb" required></label>
+        <label class="upload-tile" for="roomRefsInput"><span class="upload-symbol" aria-hidden="true">▧</span><strong>参考照片与坐标</strong><small>ZIP · 最大 4 GB</small><span class="selected-file" id="roomRefsName">点击选择参考数据</span><input id="roomRefsInput" type="file" accept=".zip" required></label>
+      </div>
+      <p class="input-explanation">支持 Polycam 原始数据 ZIP、7-Scenes，或照片与 <code>references.json</code> 的 ZIP。需包含相机内参、拍摄位姿及模型坐标关系。<a href="/reference-format.json" download="references.json">下载通用格式示例 ↗</a></p>
+      <details class="import-options"><summary>数据格式与高级选项</summary>
+        <label class="field-label" for="roomFormat">数据格式</label><select id="roomFormat"><option value="auto">自动识别（推荐）</option><option value="polycam">Polycam 原始数据</option><option value="7-scenes">7-Scenes</option><option value="posed-images">照片与 references.json</option></select>
+        <div class="stride-row"><label>7-Scenes 参考图抽样间隔<input id="trainStride" type="number" min="1" max="10000" value="10"></label><label>测试图抽样间隔<input id="testStride" type="number" min="1" max="10000" value="50"></label></div>
+        <label class="field-label" for="sevenCoordinates">原始 7-Scenes 数据到 GLB 的坐标</label><select id="sevenCoordinates"><option value="converted">本项目提供的 Y 向上模型</option><option value="original">GLB 保留数据集原始世界坐标</option><option value="custom">自定义 4×4 坐标变换</option></select>
+        <textarea id="worldTransform" class="text-input" rows="4" hidden aria-label="数据集到 GLB 的四阶变换矩阵" placeholder="[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]"></textarea>
+        <small>抽样和坐标选项只用于原始 7-Scenes；已准备好的参考包沿用包内设置。Polycam 数据和 GLB 请使用同次扫描的导出。</small>
+      </details>
+      <div id="roomUploadProgress" class="room-upload-progress" hidden><div class="progress-track"><span id="roomUploadBar"></span></div><p id="roomUploadText" role="status" aria-live="polite"></p></div>
+      <p id="roomUploadError" class="error-message" role="alert" hidden></p>
+      <button id="prepareRoomButton" class="primary-button" type="submit"><span>上传并准备房间</span><span aria-hidden="true">↗</span></button>
+      <p class="dialog-footnote">建库通常需几十秒到数分钟，取决于照片数量和电脑性能。失败后可保留上传文件重试。</p>
+    </form>
+  </dialog>
+</body>
+</html>

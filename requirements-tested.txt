@@ -1,0 +1,14 @@
+# Exact direct dependency versions used for the included validation (Python 3.12).
+numpy==2.3.5
+opencv-python-headless==5.0.0.93
+Pillow==12.3.0
+scipy==1.17.0
+trimesh==5.1.1
+rtree==1.4.1
+plotly==6.9.0
+pillow-heif==1.8.1
+numba==0.68.0
+# numba resolved llvmlite==0.50.0 on the Linux Python 3.12 validation runtime.
+# Enhanced inference was tested with CPU wheels from download.pytorch.org:
+# torch==2.14.1+cpu, torchvision==0.29.1+cpu, kornia==0.8.3.
+# Use requirements-enhanced.txt for platform-appropriate installation.

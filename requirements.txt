@@ -1,0 +1,9 @@
+numpy>=1.24,<3
+opencv-python-headless>=4.8,<6
+Pillow>=10,<13
+scipy>=1.10,<2
+trimesh>=4.6,<6
+rtree>=1.2,<2
+plotly>=5.18,<7
+pillow-heif>=0.18,<2
+numba>=0.61,<1

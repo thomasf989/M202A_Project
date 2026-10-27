@@ -1,0 +1,172 @@
+{
+  "_instructions": "示例值必须替换成真实相机内参和位姿。图片必须已去畸变且保持对应像素方向。camera_to_world 是列向量约定的相机到世界变换，位置单位米。world_to_glb 把该世界坐标变换到上传 GLB 的坐标系。至少四张参考照片。",
+  "format": "posed-images-v1",
+  "camera_convention": "opencv",
+  "world_to_glb": [
+    [
+      1,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      1,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      1
+    ]
+  ],
+  "intrinsics": {
+    "width": 640,
+    "height": 480,
+    "fx": 525,
+    "fy": 525,
+    "cx": 320,
+    "cy": 240,
+    "distortion": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  "frames": [
+    {
+      "id": "photo-001",
+      "image": "images/photo-001.jpg",
+      "camera_to_world": [
+        [
+          1,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          1
+        ]
+      ],
+      "split": "reference"
+    },
+    {
+      "id": "photo-002",
+      "image": "images/photo-002.jpg",
+      "camera_to_world": [
+        [
+          1,
+          0,
+          0,
+          0.1
+        ],
+        [
+          0,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          1
+        ]
+      ],
+      "split": "reference"
+    },
+    {
+      "id": "photo-003",
+      "image": "images/photo-003.jpg",
+      "camera_to_world": [
+        [
+          1,
+          0,
+          0,
+          -0.1
+        ],
+        [
+          0,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          1
+        ]
+      ],
+      "split": "reference"
+    },
+    {
+      "id": "photo-004",
+      "image": "images/photo-004.jpg",
+      "camera_to_world": [
+        [
+          1,
+          0,
+          0,
+          0.2
+        ],
+        [
+          0,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          1
+        ]
+      ],
+      "split": "reference"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+data/
+outputs/
+sample_results/
+*.zip
+.pytest_cache/
+.coverage
+*.tmp
