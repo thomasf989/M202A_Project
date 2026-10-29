@@ -9,3 +9,7 @@ sample_results/
 .pytest_cache/
 .coverage
 *.tmp
+*.egg-info/
+ios/WalkingBaseline/Generated/
+ios/WalkingBaseline/*.xcodeproj/
+ios/WalkingBaseline/DerivedData/

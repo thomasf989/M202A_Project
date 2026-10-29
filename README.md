@@ -23,3 +23,11 @@ cd visual_localization
 ```
 
 Models, reference photos, generated databases, caches, and experiment outputs are supplied or created locally and are not included in this repository.
+
+## iPhone walking baseline
+
+[`ios/WalkingBaseline/`](ios/WalkingBaseline/) contains a native ARKit/RealityKit
+marker-aligned walking prototype, a printable reference image, XcodeGen project
+configuration, and alignment unit tests. See its README for Mac build steps and
+the physical-device acceptance checklist. This baseline does not yet integrate
+Wi-Fi measurements or automatic visual-localization corrections.
