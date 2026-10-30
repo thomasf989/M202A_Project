@@ -161,6 +161,7 @@ async function begin(sample=false){
       job=await api('/api/sample',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
     }else{
       const form=new FormData();form.append('image',state.file,state.file.name);form.append('mode',$('cameraMode').value);
+      const baseline=$('multisetPoseInput')?.files?.[0];if(baseline)form.append('multiset_pose',baseline,baseline.name);
       job=await api('/api/localize',{method:'POST',body:form});
     }
     await drawScene();poll(job.id);
@@ -190,9 +191,19 @@ function showResult(result){
     $('sceneHint').textContent='没有显示估计位置，请换一个视角再试';return;
   }
   result.pose.position_m.forEach((v,i)=>$(['posX','posY','posZ'][i]).textContent=v.toFixed(3));
-  $('resultQuality').textContent=`${result.inliers} 个可信匹配点 · ${result.total_seconds.toFixed(1)} 秒${result.initial_attempt?' · 增强匹配':''}`;
+  let quality=`${result.inliers} 个可信匹配点 · ${result.total_seconds.toFixed(1)} 秒`;
+  if(result.pose_confidence!==undefined)quality+=` · 几何置信 ${Number(result.pose_confidence).toFixed(2)}`;
+  if(result.retrieval_method)quality+=` · ${result.retrieval_method}`;
+  $('resultQuality').textContent=quality;
   if(result.position_error_m!==undefined)$('resultQuality').textContent+=` · 位置误差 ${(result.position_error_m*100).toFixed(1)} cm · 方向误差 ${result.rotation_error_deg.toFixed(2)}°`;
   $('cameraNote').textContent=result.camera.note;$('cameraNote').hidden=!result.camera.estimated&&!result.sample;
+  const ms=$('multisetComparison');
+  if(result.multiset_position_difference_m!==undefined){
+    let text=`与 MultiSet baseline 的位置差 ${(result.multiset_position_difference_m*100).toFixed(1)} cm`;
+    if(result.multiset_rotation_difference_deg!==undefined)text+=` · 方向差 ${result.multiset_rotation_difference_deg.toFixed(2)}°`;
+    if(result.multiset_baseline?.confidence!==undefined&&result.multiset_baseline.confidence!==null)text+=` · MultiSet confidence ${Number(result.multiset_baseline.confidence).toFixed(2)}`;
+    ms.textContent=text+'（baseline，不等同于 ground truth）';ms.hidden=false;
+  }else{ms.hidden=true;ms.textContent='';}
   $('downloadModel').href=result.urls.model;$('downloadPose').href=result.urls.pose;$('openViewer').href=result.urls.viewer;
   if(window.innerWidth<760)$('resultCard').scrollIntoView({behavior:'smooth',block:'nearest'});
 }

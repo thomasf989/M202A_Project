@@ -1,0 +1,10 @@
+{
+  "queries": [
+    {
+      "id": "phone_height_01",
+      "image": "queries/phone_height_01.jpg",
+      "intrinsics": "iphone_intrinsics.json",
+      "multiset_pose": "multiset/phone_height_01.json"
+    }
+  ]
+}

@@ -9,12 +9,12 @@ from .features import extract, match
 
 @dataclass
 class Settings:
-    top_k: int = 8
+    top_k: int = 12
     ratio: float = .75
     reprojection_px: float = 4.
     min_inliers: int = 12
     min_inlier_ratio: float = .12
-    iterations: int = 3000
+    iterations: int = 4000
     seed: int = 42
 
 
@@ -49,7 +49,21 @@ def unique_inliers(qids, errors, valid):
     return np.asarray(chosen, dtype=int)
 
 
+def _quality_score(inliers, ratio, median_px, occupied, supporting_refs, min_inliers):
+    """A conservative 0..1 diagnostic confidence, not a calibrated probability."""
+    inlier_term = min(1.0, inliers/max(min_inliers*3.0, 1.0))
+    ratio_term = np.clip((ratio-.08)/.42, 0., 1.)
+    reproj_term = float(np.exp(-max(median_px, 0.)/3.0))
+    coverage_term = min(1.0, occupied/8.0)
+    reference_term = min(1.0, supporting_refs/3.0)
+    score = .28*inlier_term + .24*ratio_term + .22*reproj_term + .16*coverage_term + .10*reference_term
+    return float(np.clip(score, 0., 1.))
+
+
 def solve_pose(xyz, xy, qids, group_ids, K, image_size, settings):
+    xyz=np.asarray(xyz,float);xy=np.asarray(xy,float);qids=np.asarray(qids);group_ids=np.asarray(group_ids)
+    finite=np.isfinite(xyz).all(1)&np.isfinite(xy).all(1)
+    xyz,xy,qids,group_ids=xyz[finite],xy[finite],qids[finite],group_ids[finite]
     if len(xyz) < settings.min_inliers:
         return None, {'reason': 'too_few_2d_3d_correspondences', 'correspondences': len(xyz)}
     hypotheses = []
@@ -81,20 +95,27 @@ def solve_pose(xyz, xy, qids, group_ids, K, image_size, settings):
     total_unique = len(np.unique(qids))
     fraction = len(inliers)/max(total_unique, 1)
     width, height = image_size
-    occupied = len(np.unique(np.floor(xy[inliers] / [width/4, height/4]).astype(int), axis=0)) if len(inliers) else 0
+    if len(inliers):
+        cells=np.floor(xy[inliers]/[max(width/4,1),max(height/4,1)]).astype(int)
+        cells=np.clip(cells,[0,0],[3,3])
+        occupied = len(np.unique(cells,axis=0))
+    else:occupied=0
+    supporting_refs=len(np.unique(group_ids[inliers])) if len(inliers) else 0
+    median=float(np.median(e[inliers])) if len(inliers) else float('inf')
+    p90=float(np.percentile(e[inliers],90)) if len(inliers) else float('inf')
     stats = dict(correspondences=len(xyz), unique_query_matches=total_unique, inliers=len(inliers),
-                 inlier_ratio=fraction, occupied_grid_cells=occupied)
+                 inlier_ratio=fraction, occupied_grid_cells=occupied, supporting_references=supporting_refs,
+                 median_reprojection_px=median, p90_reprojection_px=p90)
+    stats['pose_confidence']=_quality_score(len(inliers),fraction,median,occupied,supporting_refs,settings.min_inliers)
+    stats['confidence_note']='Heuristic geometric confidence (0..1), not a calibrated probability.'
     if len(inliers) < settings.min_inliers or fraction < settings.min_inlier_ratio or occupied < 4:
         return None, dict(stats, reason='insufficient_geometric_support')
     spread = np.linalg.svd(xyz[inliers]-xyz[inliers].mean(axis=0), compute_uv=False)
-    if spread[1] < .03:
+    if len(spread)<2 or spread[1] < .03:
         return None, dict(stats, reason='nearly_collinear_3d_points')
     R = cv2.Rodrigues(r)[0]
     T = np.eye(4)
     T[:3, :3], T[:3, 3] = R.T, -R.T @ t.reshape(3)
-    stats.update(median_reprojection_px=float(np.median(e[inliers])),
-        p90_reprojection_px=float(np.percentile(e[inliers], 90)),
-        supporting_references=len(np.unique(group_ids[inliers])))
     return T, dict(stats, inlier_indices=inliers.tolist())
 
 
@@ -110,6 +131,7 @@ def consensus_position(capture, ranking, radius=.75):
 
 
 def localize(capture, db, rgb, K, settings=None, exclude=(), query_hash=None, candidate_intrinsics=None):
+    """CPU baseline retained for ablation/fallback."""
     start = time.perf_counter()
     s = settings or Settings()
     cv2.setRNGSeed(s.seed)
@@ -119,7 +141,7 @@ def localize(capture, db, rgb, K, settings=None, exclude=(), query_hash=None, ca
         excluded.update(id for id, h in db.meta['reference_image_hashes'].items() if h == query_hash)
     rank = db.rank(dq, excluded)
     result = dict(success=False, settings=asdict(s), query_features=len(xyq),
-                  excluded_reference_count=len(set(db.ids) & excluded))
+                  excluded_reference_count=len(set(db.ids) & excluded), retrieval_method='RootSIFT TF-IDF')
     if not rank:
         return dict(result, reason='no_eligible_references', elapsed_seconds=time.perf_counter()-start)
     result['retrieval'] = [dict(id=id, score=score) for id, score in rank[:s.top_k]]
@@ -142,20 +164,22 @@ def localize(capture, db, rgb, K, settings=None, exclude=(), query_hash=None, ca
     if all_xyz:
         xyz, xy, qids, groups = map(np.concatenate, [all_xyz, all_xy, all_q, all_g])
         solutions = []
+        failures=[]
         candidates = candidate_intrinsics if candidate_intrinsics is not None else [K]
         for candidate in candidates:
             T, stats = solve_pose(xyz, xy, qids, groups, candidate, (rgb.shape[1], rgb.shape[0]), s)
             if T is not None:
                 solutions.append((T, stats, candidate))
+            else:failures.append(stats)
         if solutions:
-            T, stats, K = max(solutions, key=lambda x: (x[1]['inliers'], -x[1]['median_reprojection_px']))
+            T, stats, K = max(solutions, key=lambda x: (x[1]['inliers'], x[1].get('pose_confidence',0), -x[1]['median_reprojection_px']))
         else:
             T = None
+            stats=max(failures,key=lambda x:(x.get('inliers',0),x.get('inlier_ratio',0))) if failures else {'reason':'pnp_ransac_failed'}
         result.update(stats)
         if T is not None:
             result.update(success=True, pose=pose_dict(T))
             result['query_intrinsics'] = np.asarray(K).tolist()
-            # Diagnostic coordinates are useful for plotting actual RANSAC support.
             idx = np.asarray(result.pop('inlier_indices'), int)
             result['inlier_query_pixels'] = xy[idx].tolist()
             result['inlier_world_points'] = xyz[idx].tolist()

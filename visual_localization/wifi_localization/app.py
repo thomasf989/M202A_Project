@@ -22,11 +22,12 @@ from plotly.offline import get_plotlyjs
 import plotly.graph_objects as go
 import trimesh
 
-from .features import build_database, Database
+from .features import build_database, Database, extract
 from .localization import localize, Settings, pose_dict, pose_errors
 from .photo import read_photo, intrinsics_for_photo, refine_focal, validate_calibration
 from .polycam import read_json, write_json, sha256
 from .capture import load_capture
+from .multiset import read_multiset_pose, compare_to_multiset
 from .visualization import mesh_trace, scene_html
 
 ASSETS = Path(__file__).with_name('web')
@@ -75,6 +76,7 @@ class LocalApp:
         self.scene = None
         self.db = None
         self.learned = None
+        self.retriever = None
         self.sample_index = 0
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix='room-localizer')
         self.initialization = None
@@ -126,7 +128,7 @@ class LocalApp:
             self.calibration = c
         return {'saved': True, 'width': c['width'], 'height': c['height']}
 
-    def submit(self, image_bytes=None, filename='photo', mode='auto', sample=False):
+    def submit(self, image_bytes=None, filename='photo', mode='auto', sample=False, multiset_pose_bytes=None):
         with self.lock:
             if not self.state['ready']:
                 raise ValueError('房间参考库还没准备好，请稍等。')
@@ -139,6 +141,15 @@ class LocalApp:
                 if not image_bytes:
                     raise ValueError('请先选择一张照片。')
                 (folder/'source.image').write_bytes(image_bytes)
+            if multiset_pose_bytes:
+                if len(multiset_pose_bytes) > 1024*1024:
+                    raise ValueError('MultiSet pose JSON is unexpectedly large.')
+                try:
+                    baseline=json.loads(multiset_pose_bytes.decode('utf-8'))
+                    read_multiset_pose(baseline)
+                except Exception as e:
+                    raise ValueError(f'MultiSet pose JSON is invalid: {e}') from e
+                write_json(folder/'multiset_pose.json',baseline)
             self.jobs[id] = dict(id=id, status='queued', message='等待定位…', progress=0,
                 filename=Path(filename).name[:160], sample=sample)
             calibration = dict(self.calibration) if self.calibration else None
@@ -201,24 +212,57 @@ class LocalApp:
             Image.fromarray(rgb).save(folder/'query.jpg', quality=92)
             self._update_job(id, progress=.3, message='正在匹配房间特征并计算拍照位置…',
                 preview_url=f'/results/{id}/query.jpg')
-            result = localize(self.capture, self.db, rgb, candidates[0], Settings(), excluded,
-                              query_hash, candidate_intrinsics=candidates)
-            result['method'] = 'RootSIFT + visual-word retrieval + depth PnP'
-            if not result['success'] and result.get('query_features',0) >= 24:
-                original_failure = {k:result.get(k) for k in ['method','reason','query_features','correspondences','inliers','retrieval']}
+            # Preferred hierarchy: DINOv2 global retrieval -> ALIKED/LightGlue
+            # -> depth/mesh 3D correspondences -> PnP/RANSAC. MultiSet is never
+            # used inside this solver; it can only be attached later as a baseline.
+            result = None
+            enhanced_errors = []
+            try:
+                def enhanced_progress(message, fraction):
+                    self._update_job(id, progress=fraction, message=message)
+                if self.learned is None:
+                    from .learned import LearnedLocalizer
+                    self.learned = LearnedLocalizer(self.capture,self.db.ids,self.output/'learned_features',enhanced_progress)
+                else:
+                    self.learned.progress = enhanced_progress
+                ranking = None
+                retrieval_method = None
                 try:
-                    def enhanced_progress(message, fraction):
-                        self._update_job(id, progress=fraction, message=message)
-                    if self.learned is None:
-                        from .learned import LearnedLocalizer
-                        self.learned = LearnedLocalizer(self.capture,self.db.ids,self.output/'learned_features',enhanced_progress)
+                    if self.retriever is None:
+                        from .retrieval import DinoV2Retriever
+                        self.retriever = DinoV2Retriever(self.capture,self.db.ids,self.output/'global_features',progress=enhanced_progress)
                     else:
-                        self.learned.progress = enhanced_progress
-                    result = self.learned.localize(rgb,candidates,excluded,query_hash,self.db.meta['reference_image_hashes'])
-                    result['initial_attempt'] = original_failure
+                        self.retriever.progress = enhanced_progress
+                    ranking = self.retriever.rank(rgb, excluded)
+                    retrieval_method = 'DINOv2 global retrieval'
                 except Exception as e:
-                    result['enhancement_error'] = str(e)
-                    result['enhancement_help'] = '增强匹配不可用。请重新运行启动脚本安装依赖，并在首次使用时保持联网。'
+                    enhanced_errors.append(f'DINOv2 retrieval: {e}')
+                    # Still keep learned local matching: use the existing
+                    # RootSIFT database only to shortlist candidate views.
+                    _, root_desc = extract(rgb, self.db.meta['nfeatures'])
+                    ranking = self.db.rank(root_desc, excluded)
+                    retrieval_method = 'RootSIFT TF-IDF retrieval (learned local matching)'
+                result = self.learned.localize(rgb,candidates,excluded,query_hash,
+                    self.db.meta['reference_image_hashes'],candidate_ranking=ranking,top_k=16,
+                    retrieval_method=retrieval_method,settings=Settings(top_k=16))
+            except Exception as e:
+                enhanced_errors.append(f'Learned matcher: {e}')
+
+            # CPU baseline is retained as a reproducible fallback/ablation and
+            # is also tried when the learned hierarchy cannot return a pose.
+            if result is None or not result.get('success'):
+                learned_attempt = result
+                baseline = localize(self.capture, self.db, rgb, candidates[0], Settings(), excluded,
+                                    query_hash, candidate_intrinsics=candidates)
+                baseline['method'] = 'RootSIFT + visual-word TF-IDF + depth PnP (CPU baseline)'
+                if learned_attempt is not None:
+                    baseline['learned_attempt'] = {k:learned_attempt.get(k) for k in
+                        ['method','reason','query_features','correspondences','inliers','pose_confidence','retrieval_method','retrieval']}
+                result = baseline if baseline.get('success') or learned_attempt is None else learned_attempt
+            if enhanced_errors:
+                result['enhancement_warnings'] = enhanced_errors
+                if not result.get('success'):
+                    result['enhancement_help'] = 'Learned retrieval/matching was unavailable or insufficient; the CPU baseline was also attempted.'
             if camera['estimated'] and camera['source'] != '7-scenes':
                 refine_focal(result, (rgb.shape[1], rgb.shape[0]))
             if seven:
@@ -235,6 +279,12 @@ class LocalApp:
                     if result['success']:
                         pe,re=pose_errors(np.asarray(result['pose']['T_world_camera_cv']),benchmark_frame.T_world_cv)
                         result.update(position_error_m=pe,rotation_error_deg=re)
+            multiset_path=folder/'multiset_pose.json'
+            if multiset_path.is_file():
+                try:
+                    result.update(compare_to_multiset(result,read_json(multiset_path)))
+                except Exception as e:
+                    result['multiset_error']=str(e)
             result.update(query_id=self.jobs[id]['filename'], photo_metadata=metadata, camera=camera, sample=sample)
             result['urls'] = dict(preview=f'/results/{id}/query.jpg', pose=f'/results/{id}/pose.json')
             if result['success']:
@@ -374,13 +424,14 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('请选择照片后再定位。')
                 message = BytesParser(policy=email_policy).parsebytes(
                     f'Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n'.encode()+body)
-                file, mode, filename = None, 'auto', 'photo'
+                file, mode, filename, multiset_pose = None, 'auto', 'photo', None
                 if not message.is_multipart():raise ValueError('上传格式不正确。')
                 for part in message.iter_parts():
                     name = part.get_param('name', header='content-disposition')
                     if name == 'image':file=part.get_payload(decode=True);filename=part.get_filename() or filename
                     elif name == 'mode':mode=part.get_payload(decode=True).decode()
-                self.respond(202, app.submit(file, filename, mode))
+                    elif name == 'multiset_pose':multiset_pose=part.get_payload(decode=True)
+                self.respond(202, app.submit(file, filename, mode, multiset_pose_bytes=multiset_pose))
             else:self.respond(404, {'error':'Not found'})
         except (ValueError, OSError, KeyError) as e:
             self.respond(400, {'error': str(e)})

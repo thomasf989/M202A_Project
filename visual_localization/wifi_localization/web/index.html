@@ -35,6 +35,9 @@
             <input id="calibrationInput" type="file" accept=".json,application/json" hidden>
             <button id="importCalibration" type="button" class="text-button">导入相机参数 JSON ↗</button>
             <small id="calibrationStatus" class="calibration-status"></small>
+            <label class="setting-label" for="multisetPoseInput">MultiSet baseline（可选）</label>
+            <input id="multisetPoseInput" type="file" accept=".json,application/json">
+            <p>可附加同一张照片的 MultiSet VPS pose JSON。它只用于结果比较，不参与我们自己的定位计算。</p>
           </details>
           <button id="localizeButton" class="primary-button" disabled type="button"><span id="localizeLabel">定位这张照片</span><span aria-hidden="true">↗</span></button>
           <div id="progressWrap" class="progress-wrap" hidden><div class="progress-track"><span id="progressBar"></span></div><p id="progressText" role="status" aria-live="polite"></p></div>
@@ -47,7 +50,7 @@
             <p class="result-caption">房间坐标 · 米</p>
             <div class="coordinates"><div><small>X</small><b id="posX">—</b></div><div><small>Y</small><b id="posY">—</b></div><div><small>Z</small><b id="posZ">—</b></div></div>
             <p id="resultQuality" class="result-quality"></p>
-            <p id="cameraNote" class="camera-note"></p>
+            <p id="cameraNote" class="camera-note"></p><p id="multisetComparison" class="camera-note" hidden></p>
             <div class="downloads"><a id="downloadModel" class="download-button" download="room_with_camera.glb">下载带位置的模型 ↓</a><a id="downloadPose" class="text-button" download="camera_pose.json">位姿 JSON</a></div>
             <a id="openViewer" class="viewer-link" target="_blank" rel="noopener">打开独立三维页面 ↗</a>
           </div>
@@ -61,7 +64,7 @@
         <div class="viewer-tips">拖动旋转 · 滚轮缩放 · 按住 Shift 拖动平移</div>
       </section>
     </div>
-    <footer>ROOM MAP · POLYCAM / 7-SCENES <span>照片定位结果保存在本机项目的 outputs 文件夹。</span></footer>
+    <footer>ROOM MAP · MULTISET / POLYCAM / 7-SCENES <span>照片定位结果保存在本机项目的 outputs 文件夹。</span></footer>
   </main>
   <dialog id="roomDialog" class="room-dialog" aria-labelledby="roomDialogTitle">
     <form id="roomForm">
@@ -72,9 +75,9 @@
         <label class="upload-tile" for="roomModelInput"><span class="upload-symbol" aria-hidden="true">◇</span><strong>三维模型</strong><small>GLB · 最大 512 MB</small><span class="selected-file" id="roomModelName">点击选择模型</span><input id="roomModelInput" type="file" accept=".glb" required></label>
         <label class="upload-tile" for="roomRefsInput"><span class="upload-symbol" aria-hidden="true">▧</span><strong>参考照片与坐标</strong><small>ZIP · 最大 4 GB</small><span class="selected-file" id="roomRefsName">点击选择参考数据</span><input id="roomRefsInput" type="file" accept=".zip" required></label>
       </div>
-      <p class="input-explanation">支持 Polycam 原始数据 ZIP、7-Scenes，或照片与 <code>references.json</code> 的 ZIP。需包含相机内参、拍摄位姿及模型坐标关系。<a href="/reference-format.json" download="references.json">下载通用格式示例 ↗</a></p>
+      <p class="input-explanation">支持 Polycam 原始数据 ZIP、7-Scenes，或照片与 <code>references.json</code> 的 ZIP。MultiSet 导出的 textured GLB 可以直接作为三维模型；再配合你们自己的 posed/synthetic reference images 建立本地定位库。需包含相机内参、拍摄位姿及模型坐标关系。<a href="/reference-format.json" download="references.json">下载通用格式示例 ↗</a></p>
       <details class="import-options"><summary>数据格式与高级选项</summary>
-        <label class="field-label" for="roomFormat">数据格式</label><select id="roomFormat"><option value="auto">自动识别（推荐）</option><option value="polycam">Polycam 原始数据</option><option value="7-scenes">7-Scenes</option><option value="posed-images">照片与 references.json</option></select>
+        <label class="field-label" for="roomFormat">数据格式</label><select id="roomFormat"><option value="auto">自动识别（推荐）</option><option value="polycam">Polycam 原始数据</option><option value="7-scenes">7-Scenes</option><option value="posed-images">照片与 references.json / MultiSet GLB + posed refs</option></select>
         <div class="stride-row"><label>7-Scenes 参考图抽样间隔<input id="trainStride" type="number" min="1" max="10000" value="10"></label><label>测试图抽样间隔<input id="testStride" type="number" min="1" max="10000" value="50"></label></div>
         <label class="field-label" for="sevenCoordinates">原始 7-Scenes 数据到 GLB 的坐标</label><select id="sevenCoordinates"><option value="converted">本项目提供的 Y 向上模型</option><option value="original">GLB 保留数据集原始世界坐标</option><option value="custom">自定义 4×4 坐标变换</option></select>
         <textarea id="worldTransform" class="text-input" rows="4" hidden aria-label="数据集到 GLB 的四阶变换矩阵" placeholder="[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]"></textarea>

@@ -1,5 +1,5 @@
 {
-  "_instructions": "示例值必须替换成真实相机内参和位姿。图片必须已去畸变且保持对应像素方向。camera_to_world 是列向量约定的相机到世界变换，位置单位米。world_to_glb 把该世界坐标变换到上传 GLB 的坐标系。至少四张参考照片。",
+  "_instructions": "Replace example values with real intrinsics and poses. Images must be stored upright/undistorted for the declared pixel grid. camera_to_world maps camera coordinates into the reference world in meters. world_to_glb maps that world into the uploaded GLB frame. Use camera_convention=\"opencv\" for normal OpenCV poses or \"opengl\" for Blender/AR-style +X right,+Y up,-Z forward poses. A MultiSet-exported textured GLB can be used as room.glb when your real or synthetic reference poses are expressed in that same map frame. At least four reference images are required.",
   "format": "posed-images-v1",
   "camera_convention": "opencv",
   "world_to_glb": [

@@ -140,25 +140,59 @@ class Capture:
                 camera_matrix(c), self.A @ source @ CV_TO_POLYCAM, int(c['width']), int(c['height']))
         self.ids = sorted(self.frames, key=int)
         self.glb = self.root / 'room.glb'
+        self._mesh = None
+        self._ray = None
 
     def fingerprint(self):
         """Hash data content, not modification times, so stale caches are rejected."""
         h = hashlib.sha256()
         h.update(self.A.tobytes())
         h.update(str(self.depth_scale).encode())
+        h.update(b'polycam-depth-plus-sparse-mesh-consistency-v1')
         for id in self.ids:
             f = self.frames[id]
             for p in [f.image, f.camera, f.depth, f.confidence]:
                 h.update(sha256(p).encode())
         return h.hexdigest()
 
-    def world_points(self, frame, pixels, min_confidence=127, edge_threshold=.15):
-        """Lift RGB pixels with same-frame depth, filtering low confidence/edges.
+    def _mesh_z_at_pixels(self, frame, uv):
+        """Sparse ray-cast mesh depth in the reference RGB grid.
 
-        Polycam depth is millimeter axial depth. Corrected RGB is undistorted;
-        the scaled sensor depth association is approximate, not a calibrated
-        distortion remap. The mesh consistency audit quantifies its residual.
-        Pixel-center scaling supports differing RGB/depth resolutions.
+        This is used only as a consistency gate for sensor depth. If ray
+        casting is unavailable or the mesh has no hit for a pixel, the sensor
+        depth is preserved rather than rejected.
+        """
+        if not hasattr(self, 'glb') or not Path(self.glb).is_file() or not len(uv):
+            return np.full(len(uv), np.nan)
+        try:
+            if getattr(self, '_ray', None) is None:
+                from .visualization import load_mesh
+                from trimesh.ray.ray_triangle import RayMeshIntersector
+                self._mesh = load_mesh(self.glb)
+                self._ray = RayMeshIntersector(self._mesh)
+            x=(uv[:,0]-frame.K[0,2])/frame.K[0,0]
+            y=(uv[:,1]-frame.K[1,2])/frame.K[1,1]
+            directions_camera=np.column_stack([x,y,np.ones(len(uv))])
+            directions_world=directions_camera @ frame.T_world_cv[:3,:3].T
+            directions_world/=np.maximum(np.linalg.norm(directions_world,axis=1,keepdims=True),1e-12)
+            origins=np.repeat(frame.T_world_cv[None,:3,3],len(uv),axis=0)
+            locations,index_ray,_=self._ray.intersects_location(origins,directions_world,multiple_hits=False)
+            mesh_z=np.full(len(uv),np.nan,float)
+            if len(index_ray):
+                camera=(locations-frame.T_world_cv[:3,3]) @ frame.T_world_cv[:3,:3]
+                mesh_z[index_ray]=camera[:,2]
+            return mesh_z
+        except Exception:
+            return np.full(len(uv), np.nan)
+
+    def world_points(self, frame, pixels, min_confidence=127, edge_threshold=.15, mesh_tolerance=.25):
+        """Lift RGB pixels with depth, confidence, edge and mesh checks.
+
+        Polycam sensor depth is associated to corrected RGB by scaled pixel
+        position and is therefore approximate. To remove large bad lifts near
+        depth discontinuities/misalignment, valid sensor samples are compared
+        against a sparse ray-cast of the exported room mesh. A finite mesh hit
+        that disagrees by more than ``mesh_tolerance`` meters is rejected.
         """
         uv = np.asarray(pixels, dtype=float).reshape(-1, 2)
         d = np.asarray(Image.open(frame.depth), dtype=np.float64) * self.depth_scale
@@ -175,6 +209,10 @@ class Capture:
         z = d[y, x]
         valid &= (z > .15) & (z < 5.0) & (conf[y, x] >= min_confidence)
         valid &= (patches.min(axis=1) > 0) & (np.ptp(patches, axis=1) < edge_threshold)
+        if mesh_tolerance is not None and mesh_tolerance > 0 and valid.any():
+            mesh_z=self._mesh_z_at_pixels(frame,uv)
+            comparable=np.isfinite(mesh_z)&(mesh_z>.05)
+            valid &= ~comparable | (np.abs(mesh_z-z) <= float(mesh_tolerance))
         pc = np.column_stack([(uv[:, 0]-frame.K[0, 2])/frame.K[0, 0]*z,
                               (uv[:, 1]-frame.K[1, 2])/frame.K[1, 1]*z, z])
         return pc @ frame.T_world_cv[:3, :3].T + frame.T_world_cv[:3, 3], valid

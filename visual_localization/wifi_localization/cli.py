@@ -8,9 +8,10 @@ import numpy as np
 from PIL import Image, ImageDraw
 from .polycam import prepare_capture, read_json, write_json, rgb_image, query_calibration, sha256
 from .capture import load_capture
-from .features import build_database, Database
+from .features import build_database, Database, extract
 from .localization import Settings, localize, pose_dict, pose_errors
 from .visualization import audit, scene_html, evaluation_plot
+from .multiset import read_multiset_pose, compare_to_multiset, fit_rigid_alignment
 
 
 def settings(args):
@@ -142,7 +143,7 @@ def calibrate(args):
 
 
 def parser():
-    p = argparse.ArgumentParser(description='Polycam / 7-Scenes visual localization (CPU features + PnP).')
+    p = argparse.ArgumentParser(description='M202A visual localization v2: MultiSet/Polycam map support, learned retrieval + matching, metric PnP, tracking, and evaluation.')
     p.add_argument('--threads', type=int, default=2, help='OpenCV threads, default 2')
     sub = p.add_subparsers(dest='command', required=True)
     web=sub.add_parser('web',help='Open room upload, automatic indexing and photo localization website')
@@ -199,6 +200,13 @@ def parser():
     loc.add_argument('--db', required=True);loc.add_argument('--query', required=True)
     loc.add_argument('--intrinsics', required=True, help='JSON calibrated for oriented image resolution')
     loc.add_argument('--output', default='outputs/new_query')
+    loc.add_argument('--baseline-only', action='store_true', help='Use the CPU RootSIFT baseline instead of learned hierarchy')
+    loc.add_argument('--multiset-pose', help='Optional MultiSet VPS pose JSON for baseline comparison')
+    phones=sub.add_parser('evaluate-phones',help='Evaluate independent phone images listed in a JSON manifest')
+    data_args(phones);solver_args(phones)
+    phones.add_argument('--db',required=True);phones.add_argument('--manifest',required=True)
+    phones.add_argument('--output',default='outputs/phone_evaluation')
+    phones.add_argument('--baseline-only',action='store_true')
     demo = sub.add_parser('demo', help='Inspect, build and evaluate end to end')
     capture_args(demo);build_args(demo);solver_args(demo);evaluation_args(demo)
     demo.add_argument('--output', default='outputs/demo')
@@ -207,6 +215,9 @@ def parser():
     cal.add_argument('--images', required=True);cal.add_argument('--cols', type=int, default=9)
     cal.add_argument('--rows', type=int, default=6);cal.add_argument('--square-m', type=float, default=.025)
     cal.add_argument('--output', default='camera_intrinsics.json')
+    msa = sub.add_parser('align-multiset', help='Fit a rigid transform from your reference-map points into a MultiSet map frame')
+    msa.add_argument('--points', required=True, help='JSON with source_points and target_points arrays (Nx3)')
+    msa.add_argument('--output', default='multiset_alignment.json')
     return p
 
 
@@ -228,6 +239,11 @@ def main(argv=None):
             print(prepare_seven_scenes(args.source,args.glb,args.output,args.train_stride,args.test_stride,G,args.rgb_focal))
         elif args.command == 'calibrate':
             calibrate(args)
+        elif args.command == 'align-multiset':
+            points=read_json(args.points)
+            T,stats=fit_rigid_alignment(points['source_points'],points['target_points'])
+            write_json(args.output,dict(T_multiset_source=T.tolist(),**stats))
+            print(f"Alignment saved to {args.output}; RMSE {stats['rmse_m']:.4f} m")
         elif args.command == 'inspect':
             c = load_capture(args.data, args.alignment, args.depth_scale)
             report = audit(c, args.output, not args.skip_mesh_check)
@@ -256,15 +272,57 @@ def main(argv=None):
             if expected != actual:
                 raise ValueError('Existing demo database uses different settings. Use a fresh output directory.')
             evaluate(c, db, out / 'evaluation', settings(args), args.exclude_neighbors, args.exclude_seconds, args.limit)
+        elif args.command == 'evaluate-phones':
+            c=capture_for_database(args);db=Database(args.db,c)
+            manifest_path=Path(args.manifest).resolve();manifest=read_json(manifest_path)
+            rows=manifest if isinstance(manifest,list) else manifest.get('queries')
+            if not isinstance(rows,list) or not rows:raise ValueError('Manifest must contain a non-empty queries array')
+            from .pipeline import LocalizationPipeline
+            pipe=LocalizationPipeline(c,db,Path(args.output)/'cache')
+            out=Path(args.output);(out/'queries').mkdir(parents=True,exist_ok=True);results=[]
+            for i,row in enumerate(rows):
+                image=(manifest_path.parent/row['image']).resolve()
+                intr=(manifest_path.parent/row['intrinsics']).resolve() if row.get('intrinsics') else None
+                if intr is None:raise ValueError(f'Query {i} is missing intrinsics')
+                rgb=rgb_image(image,orient=True);K,dist=query_calibration(intr,(rgb.shape[1],rgb.shape[0]))
+                if np.any(dist):rgb=cv2.undistort(rgb,K,dist,None,K)
+                r=pipe.localize(rgb,[K],query_hash=sha256(image),settings=settings(args),enhanced=not args.baseline_only)
+                r['query_id']=row.get('id',image.name);r['image']=str(image)
+                if row.get('ground_truth'):
+                    gt=np.asarray(row['ground_truth'].get('T_world_camera_cv',row['ground_truth']),float)
+                    if gt.shape!=(4,4):raise ValueError(f'Query {i} ground_truth must be 4x4')
+                    r['ground_truth']=pose_dict(gt)
+                    if r.get('success'):
+                        pe,re=pose_errors(np.asarray(r['pose']['T_world_camera_cv']),gt)
+                        r.update(position_error_m=pe,rotation_error_deg=re)
+                if row.get('multiset_pose'):
+                    mp=(manifest_path.parent/row['multiset_pose']).resolve()
+                    r.update(compare_to_multiset(r,read_multiset_pose(mp)))
+                write_json(out/'queries'/f'{i:04d}.json',r);results.append(r)
+                print(f"{i+1}/{len(rows)} {r['query_id']}: {'OK' if r.get('success') else 'FAILED'}")
+            summary=aggregate(results)
+            summary['dataset']='independent phone manifest';summary['baseline_only']=bool(args.baseline_only)
+            ms=[r['multiset_position_difference_m'] for r in results if 'multiset_position_difference_m'in r]
+            if ms:summary['multiset_position_difference_m']=dict(count=len(ms),mean=float(np.mean(ms)),median=float(np.median(ms)),p90=float(np.percentile(ms,90)))
+            write_json(out/'results.json',results);write_json(out/'summary.json',summary)
+            fields=['query_id','success','reason','method','retrieval_method','position_error_m','rotation_error_deg','multiset_position_difference_m','multiset_rotation_difference_deg','inliers','inlier_ratio','pose_confidence','median_reprojection_px','elapsed_seconds']
+            with (out/'results.csv').open('w',newline='',encoding='utf-8') as f:
+                w=csv.DictWriter(f,fieldnames=fields,extrasaction='ignore');w.writeheader();w.writerows(results)
+            print(f'Results: {out.resolve()}')
         elif args.command == 'localize':
             c = capture_for_database(args);db = Database(args.db, c)
             rgb = rgb_image(args.query, orient=True)
             K, dist = query_calibration(args.intrinsics, (rgb.shape[1], rgb.shape[0]))
             if np.any(dist):
                 rgb = cv2.undistort(rgb, K, dist, None, K)
-            r = localize(c, db, rgb, K, settings(args), query_hash=sha256(args.query))
+            qhash=sha256(args.query);s=settings(args)
+            from .pipeline import LocalizationPipeline
+            pipe=LocalizationPipeline(c,db,Path(args.output)/'cache')
+            r=pipe.localize(rgb,[K],query_hash=qhash,settings=s,enhanced=not args.baseline_only)
+            if args.multiset_pose:
+                r.update(compare_to_multiset(r,read_multiset_pose(args.multiset_pose)))
             r.update(query_id=Path(args.query).name, query_intrinsics=K.tolist(), input_distortion=dist.tolist())
-            out = Path(args.output)
+            out = Path(args.output);out.mkdir(parents=True,exist_ok=True)
             write_json(out / 'pose.json', r)
             scene_html(c, out / 'localization.html', [r], db.ids)
             overlay = Image.fromarray(rgb)
@@ -275,7 +333,8 @@ def main(argv=None):
             if r['success']:
                 print('Position (m):', r['pose']['position_m'])
                 print('Quaternion (x,y,z,w):', r['pose']['quaternion_xyzw'])
-                print(f"Inliers: {r['inliers']}; median reprojection: {r['median_reprojection_px']:.2f} px")
+                print(f"Inliers: {r['inliers']}; median reprojection: {r['median_reprojection_px']:.2f} px; confidence {r.get('pose_confidence',0):.2f}")
+                if 'multiset_position_difference_m' in r:print(f"MultiSet position difference: {r['multiset_position_difference_m']:.3f} m")
             else:
                 print('Localization failed:', r['reason'])
                 sys.exit(2)
