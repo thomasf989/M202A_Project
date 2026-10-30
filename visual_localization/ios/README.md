@@ -48,6 +48,19 @@ GLB 与参考相机位姿必须对应同一房间、同一坐标系，坐标单�
 
 免费 Personal Team 描述文件 7 天到期，需要重新构建安装。如果要求安装和更新时也只操作手机，应由开发团队通过 TestFlight 或 App Store 发布。TestFlight 每个构建最长可测试 90 天，由开发端提供新构建后可在手机上更新；它不是永久签名方案。[Apple TestFlight 说明](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/)。
 
+### 构建时找不到 ZIPFoundation
+
+若出现 `Unable to resolve module dependency: 'ZIPFoundation'`，先检查编译配置和包解析状态。仓库已声明并链接 ZIPFoundation 0.9.20；Swift 包需要在首次构建时下载完成。
+
+1. 使用更新后的完整工程。Debug 的 **Build Active Architecture Only** 应为 **Yes**，Release 为 **No**。旧版工程漏设了 Debug 的此项配置，可能造成 App 与 Swift 包在 Apple silicon 模拟器上构建不同架构。可直接在 RoomLocate target → Build Settings → 搜索 `ONLY_ACTIVE_ARCH`，展开后将 Debug 改为 Yes。
+2. 选择 **File → Packages → Resolve Package Versions**，等待包解析完成。
+3. 确认工程的 **Package Dependencies** 中有 ZIPFoundation 0.9.20，且 RoomLocate target 的 **General → Frameworks, Libraries, and Embedded Content** 中关联了 ZIPFoundation。若依赖缺失，使用 **File → Add Package Dependencies**，输入 `https://github.com/weichsel/ZIPFoundation.git`，选择精确版本 0.9.20，并将产品加入 RoomLocate target。
+4. 选择 **Product → Clean Build Folder**（⌘⇧K），再运行（⌘R）。
+
+如果仍失败，请展开完整的 `Ignoring file` / `Module file` 警告，并查看构建日志中 ZIPFoundation 的第一条错误，以区分架构、包下载和缓存问题。不要仅凭这条模块错误断定包没有下载。本次配置修复尚未在此 Linux 环境完成 Apple SDK 构建。
+
+依据：[Apple silicon 架构设置](https://developer.apple.com/documentation/technotes/tn3117-resolving-build-errors-for-apple-silicon)、[添加并关联 Swift 包](https://developer.apple.com/documentation/xcode/adding-package-dependencies-to-your-app)。
+
 ## 4. 兼容已有房间包
 
 点击 **导入 → 已有 .roomloc 房间包**，选择过去导出的文件即可。也可以从“文件”App 打开房间包。

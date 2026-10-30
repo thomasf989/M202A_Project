@@ -72,10 +72,10 @@ def main():
             LD_RUNPATH_SEARCH_PATHS=['$(inherited)', '@executable_path/Frameworks'], ENABLE_USER_SCRIPT_SANDBOXING='YES',
             SWIFT_STRICT_CONCURRENCY='minimal', MARKETING_VERSION='1.1', CURRENT_PROJECT_VERSION='2')
         if configuration == 'Debug':
-            project_settings.update(GCC_OPTIMIZATION_LEVEL='0', DEBUG_INFORMATION_FORMAT='dwarf', GCC_PREPROCESSOR_DEFINITIONS=['DEBUG=1', '$(inherited)'])
+            project_settings.update(ONLY_ACTIVE_ARCH='YES', GCC_OPTIMIZATION_LEVEL='0', DEBUG_INFORMATION_FORMAT='dwarf', GCC_PREPROCESSOR_DEFINITIONS=['DEBUG=1', '$(inherited)'])
             target_settings.update(SWIFT_OPTIMIZATION_LEVEL='-Onone', SWIFT_ACTIVE_COMPILATION_CONDITIONS='DEBUG')
         else:
-            project_settings.update(DEBUG_INFORMATION_FORMAT='dwarf-with-dsym')
+            project_settings.update(ONLY_ACTIVE_ARCH='NO', DEBUG_INFORMATION_FORMAT='dwarf-with-dsym')
             target_settings.update(SWIFT_OPTIMIZATION_LEVEL='-O', SWIFT_COMPILATION_MODE='wholemodule')
         project_configs.append(add('project:' + configuration, 'XCBuildConfiguration', name=configuration, buildSettings=project_settings))
         target_configs.append(add('target:' + configuration, 'XCBuildConfiguration', name=configuration, buildSettings=target_settings))
