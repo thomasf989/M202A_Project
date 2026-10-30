@@ -11,6 +11,7 @@ const baseLayout = {
 };
 function error(message){$('errorMessage').textContent=message;$('errorMessage').hidden=!message;}
 function controls(){
+  $('exportMobile').disabled=!state.ready||state.busy||state.uploading;
   $('localizeButton').disabled=!state.ready||!state.file||state.busy;
   $('sampleButton').disabled=!state.ready||state.busy;
   $('dropzone').disabled=state.busy;$('photoInput').disabled=state.busy;
@@ -57,6 +58,8 @@ function cameraTraces(pose){
   ];
 }
 function resetRoom(id){
+  $('mobileDownload').hidden=true;
+  $('mobileExportNote').textContent='房间准备好后，可导出并传入 iPhone App 离线使用。';
   state.currentRoom=id;state.scene=null;state.result=null;state.drawn=false;state.file=null;state.ready=false;
   state.cameraModeInitialized=false;state.loadingScene=false;
   if(state.objectUrl)URL.revokeObjectURL(state.objectUrl);state.objectUrl=null;
@@ -198,6 +201,22 @@ function showResult(result){
 }
 $('localizeButton').addEventListener('click',()=>begin(false));
 $('sampleButton').addEventListener('click',()=>begin(true));
+$('exportMobile').addEventListener('click',async()=>{
+  if(!state.ready||state.busy||state.uploading)return;
+  state.busy=true;controls();$('mobileDownload').hidden=true;
+  try{
+    let job=await api('/api/mobile-export',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    while(job.status!=='done'&&job.status!=='error'){
+      $('mobileExportNote').textContent=job.message||'正在导出房间包…';
+      await new Promise(resolve=>setTimeout(resolve,800));
+      job=await api(`/api/jobs/${job.id}`);
+    }
+    if(job.status==='error')throw new Error(job.message);
+    $('mobileDownload').href=job.result.url;$('mobileDownload').hidden=false;
+    $('mobileExportNote').textContent='导出完成。下载 .roomloc 文件，通过 AirDrop 或“文件”传入 iPhone App。';
+  }catch(e){$('mobileExportNote').textContent=e.message;}
+  finally{state.busy=false;controls();}
+});
 $('importCalibration').addEventListener('click',()=>$('calibrationInput').click());
 $('calibrationInput').addEventListener('change',async event=>{
   const file=event.target.files[0];if(!file)return;
@@ -317,3 +336,4 @@ async function watchBuild(id){
     roomError(e.message);uploadControls();
   }
 }
+

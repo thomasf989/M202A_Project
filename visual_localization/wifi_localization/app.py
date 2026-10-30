@@ -151,6 +151,34 @@ class LocalApp:
                 raise KeyError('找不到这次定位任务。')
             return dict(self.jobs[id])
 
+    def submit_mobile(self, name='Room'):
+        with self.lock:
+            if not self.state['ready']:
+                raise ValueError('请先等待房间参考库准备完成。')
+            if any(j['status'] in ['queued', 'running'] for j in self.jobs.values()):
+                raise ValueError('已有任务正在处理，请等待完成。')
+            id = uuid.uuid4().hex
+            folder = self.output/'queries'/id
+            folder.mkdir(parents=True, exist_ok=True)
+            self.jobs[id] = dict(id=id, status='queued', kind='mobile-export', progress=0, message='等待导出房间包…')
+            self.worker.submit(self._export_mobile, id, name)
+            return dict(self.jobs[id])
+
+    def _export_mobile(self, id, name):
+        try:
+            from .mobile import export_mobile
+            self._update_job(id, status='running', progress=.05, message='正在准备手机参考库…')
+            def progress(done, total):
+                self._update_job(id, progress=.1+.75*done/max(total, 1),
+                                 message=f'正在导出参考特征 {done}/{total}…')
+            result = export_mobile(self.capture, self.db, self.output/'queries'/id/'room.roomloc', name, progress)
+            # A local filesystem path is not needed by the browser.
+            result.pop('path', None)
+            result['url'] = f'/results/{id}/room.roomloc'
+            self._update_job(id, status='done', progress=1, message='房间包已准备好，可传入 iPhone。', result=result)
+        except Exception as e:
+            self._update_job(id, status='error', progress=1, message=f'房间包导出失败：{e}')
+
     def _update_job(self, id, **kwargs):
         with self.lock:
             self.jobs[id].update(kwargs)
@@ -329,7 +357,7 @@ class Handler(BaseHTTPRequestHandler):
         elif re.fullmatch(r'/api/jobs/[0-9a-f]{32}', path):
             try:self.respond(200, app.job(path.rsplit('/', 1)[1]))
             except KeyError:self.respond(404, {'error':'Unknown job'})
-        elif re.fullmatch(r'/results/[0-9a-f]{32}/(query.jpg|pose.json|localized_room.glb|localization.html|inliers.jpg)', path):
+        elif re.fullmatch(r'/results/[0-9a-f]{32}/(query.jpg|pose.json|localized_room.glb|localization.html|inliers.jpg|room.roomloc)', path):
             try:self.send_path(app.result_path(path.split('/')[2],path.split('/')[3]))
             except KeyError:self.respond(404,{'error':'Unknown result'})
         else:self.respond(404, {'error':'Not found'})
@@ -368,6 +396,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(200, app.save_calibration(json.loads(body)))
             elif self.path == '/api/sample':
                 self.respond(202, app.submit(sample=True, filename='示例照片'))
+            elif self.path == '/api/mobile-export':
+                self.respond(202, app.submit_mobile())
             elif self.path == '/api/localize':
                 content_type = self.headers.get('Content-Type', '')
                 if not content_type.startswith('multipart/form-data;'):
@@ -433,3 +463,4 @@ def run_web(output='outputs/web',port=8765,open_browser=True,initial=None):
     try:server.serve_forever()
     except KeyboardInterrupt:pass
     finally:server.server_close();app.close()
+
