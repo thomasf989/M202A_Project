@@ -199,6 +199,11 @@ def parser():
     loc.add_argument('--db', required=True);loc.add_argument('--query', required=True)
     loc.add_argument('--intrinsics', required=True, help='JSON calibrated for oriented image resolution')
     loc.add_argument('--output', default='outputs/new_query')
+    mobile = sub.add_parser('export-mobile', help='Export a reference-only .roomloc package for the offline iPhone app')
+    data_args(mobile)
+    mobile.add_argument('--db', required=True)
+    mobile.add_argument('--output', required=True, help='Output .roomloc filename')
+    mobile.add_argument('--name', default='Room')
     demo = sub.add_parser('demo', help='Inspect, build and evaluate end to end')
     capture_args(demo);build_args(demo);solver_args(demo);evaluation_args(demo)
     demo.add_argument('--output', default='outputs/demo')
@@ -228,6 +233,10 @@ def main(argv=None):
             print(prepare_seven_scenes(args.source,args.glb,args.output,args.train_stride,args.test_stride,G,args.rgb_focal))
         elif args.command == 'calibrate':
             calibrate(args)
+        elif args.command == 'export-mobile':
+            from .mobile import export_mobile
+            capture = capture_for_database(args)
+            print(export_mobile(capture, args.db, args.output, args.name))
         elif args.command == 'inspect':
             c = load_capture(args.data, args.alignment, args.depth_scale)
             report = audit(c, args.output, not args.skip_mesh_check)
@@ -282,3 +291,4 @@ def main(argv=None):
     except (ValueError, KeyError, OSError, cv2.error) as e:
         print(f'Error: {e}', file=sys.stderr)
         sys.exit(1)
+

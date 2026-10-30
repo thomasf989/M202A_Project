@@ -17,6 +17,11 @@
       <p>上传一次，保存参考库。之后直接切换房间。</p>
       <button id="addRoom" class="add-room-button" type="button"><span aria-hidden="true">＋</span> 添加房间</button>
     </section>
+    <section class="mobile-export" aria-label="iPhone 离线房间包">
+      <button id="exportMobile" class="add-room-button" type="button" disabled>导出 iPhone 房间包</button>
+      <a id="mobileDownload" download="room.roomloc" hidden>下载房间包 ↓</a>
+      <span id="mobileExportNote" role="status">房间准备好后，可导出并传入 iPhone App 离线使用。</span>
+    </section>
     <div class="workspace">
       <aside class="sidebar">
         <section class="card input-card">
@@ -88,3 +93,4 @@
   </dialog>
 </body>
 </html>
+

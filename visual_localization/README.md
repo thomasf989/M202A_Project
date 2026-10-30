@@ -1,4 +1,10 @@
-# Visual localization v1.4
+# Visual localization
+
+## iPhone offline version (development)
+
+The [iOS app and Xcode project](ios/README.md) run the RootSIFT/PnP pipeline directly on the phone. Prepare a room using the desktop app, then click **导出 iPhone 房间包** and transfer the resulting `.roomloc` file to the phone. The app imports it locally, captures or selects photos, displays camera poses in the room, and exports pose JSON. It does not require a running computer or server for localization.
+
+The C++ solver and desktop-to-native export path have portable tests. The complete Apple SDK build and camera/device performance still require validation in Xcode on a Mac. This first mobile version uses the SIFT baseline; the desktop ALIKED/LightGlue fallback remains available on the desktop.
 
 Estimate a camera's 6-DoF pose inside a mapped room from a new photo, view the result in a GLB model, and export the model with a camera marker.
 
@@ -64,3 +70,4 @@ Tests cover pose recovery, coordinate and depth handling, official train/test se
 ## Third-party components
 
 Vendored LightGlue and ALIKED inference files retain their upstream notices. See [upstream components](wifi_localization/_vendor/lightglue/UPSTREAM.md) and [license](wifi_localization/_vendor/lightglue/LICENSE). Dataset users must follow the licenses supplied by their data providers.
+
