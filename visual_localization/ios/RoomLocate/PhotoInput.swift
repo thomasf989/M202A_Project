@@ -13,6 +13,30 @@ struct PreparedPhoto {
     let focal35mm: Double?
     let sourceHash: String
 
+    static func prepare(fileAt url: URL) throws -> PreparedPhoto {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let coordinator = NSFileCoordinator()
+        var coordinationError: NSError?, readError: Error?
+        var photo: PreparedPhoto?
+        coordinator.coordinate(readingItemAt: url, options: [], error: &coordinationError) { readable in
+            do {
+                let values = try readable.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                guard values.isRegularFile == true, let size = values.fileSize,
+                      size > 0, size <= 128 * 1024 * 1024 else {
+                    throw RoomLocateError.message("请选择完整的照片文件，大小不能超过 128 MiB。")
+                }
+                // Keep original bytes for EXIF orientation, focal metadata and
+                // reference-photo hash exclusion, just like the album path.
+                photo = try prepare(Data(contentsOf: readable, options: .mappedIfSafe))
+            } catch { readError = error }
+        }
+        if let coordinationError { throw coordinationError }
+        if let readError { throw readError }
+        guard let photo else { throw RoomLocateError.message("未能读取照片，请在“文件”App 中下载完成后重试。") }
+        return photo
+    }
+
     static func prepare(_ data: Data) throws -> PreparedPhoto {
         guard data.count <= 128 * 1024 * 1024,
               let source = CGImageSourceCreateWithData(data as CFData, nil),

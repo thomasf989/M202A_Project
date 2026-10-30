@@ -1,5 +1,6 @@
 import PhotosUI
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 struct ContentView: View {
@@ -7,6 +8,7 @@ struct ContentView: View {
     @State private var importRoom = false
     @State private var createRoom = false
     @State private var importCalibration = false
+    @State private var importPhoto = false
     @State private var showCamera = false
     @State private var selection: PhotosPickerItem?
     @State private var cameraReset = 0
@@ -111,7 +113,7 @@ struct ContentView: View {
 
     private var photoControls: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("拍照定位").font(.headline)
+            Text("照片定位").font(.headline)
             if let photo = model.photo {
                 Image(uiImage: photo.preview).resizable().scaledToFit().frame(maxHeight: 200)
                     .frame(maxWidth: .infinity).clipShape(RoundedRectangle(cornerRadius: 12))
@@ -120,10 +122,17 @@ struct ContentView: View {
                 Button {
                     Task {
                         if await CameraCapture.requestAccess() { showCamera = true }
-                        else { model.error = "相机不可用。请在 iPhone 设置中允许本 App 使用相机，或从相册选择照片。" }
+                        else { model.error = "相机不可用。请在 iPhone 设置中允许本 App 使用相机，或从相册、文件选择照片。" }
                     }
                 } label: { Label("拍照", systemImage: "camera") }
                 PhotosPicker(selection: $selection, matching: .images) { Label("相册", systemImage: "photo") }
+                Button { importPhoto = true } label: { Label("文件", systemImage: "folder") }
+                    .fileImporter(isPresented: $importPhoto, allowedContentTypes: [.image]) { result in
+                        switch result {
+                        case .success(let url): Task { await model.choosePhotoFile(url) }
+                        case .failure(let error): model.error = error.localizedDescription
+                        }
+                    }
             }.buttonStyle(.bordered).disabled(model.busy || model.selectedRoom == nil)
             Button { Task { await model.localize() } } label: {
                 Label("定位这张照片", systemImage: "location.viewfinder").frame(maxWidth: .infinity).padding(.vertical, 6)

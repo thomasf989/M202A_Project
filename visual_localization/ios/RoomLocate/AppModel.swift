@@ -59,6 +59,7 @@ private final class DeviceWorker: @unchecked Sendable {
         }
     }
     func preparePhoto(_ data: Data) async throws -> PreparedPhoto { try await perform { try PreparedPhoto.prepare(data) } }
+    func preparePhotoFile(_ url: URL) async throws -> PreparedPhoto { try await perform { try PreparedPhoto.prepare(fileAt: url) } }
     func saveCalibration(_ url: URL, room: RoomRecord) async throws -> Calibration {
         try await perform { try RoomStore.saveCalibration(url, room: room) }
     }
@@ -187,6 +188,12 @@ final class AppModel: ObservableObject {
         message = "正在准备照片…"; defer { busy = false }
         do { photo = try await worker.preparePhoto(data); message = "照片已准备好，可以开始定位。" }
         catch { self.error = error.localizedDescription; message = "照片读取失败。" }
+    }
+    func choosePhotoFile(_ url: URL) async {
+        guard !busy else { return }; busy = true; error = nil; clearResult(); photo = nil
+        message = "正在读取照片文件，云端文件可能需要等待下载…"; defer { busy = false }
+        do { photo = try await worker.preparePhotoFile(url); message = "照片已准备好，可以开始定位。" }
+        catch { self.error = error.localizedDescription; message = "照片文件读取失败，请检查文件是否已下载且为有效图片。" }
     }
     func importCalibration(_ url: URL) async {
         guard !busy, let room = selectedRoom else { return }; busy = true; error = nil; clearResult()
