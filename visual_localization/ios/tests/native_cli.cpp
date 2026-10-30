@@ -1,4 +1,5 @@
 #include "../Native/LocalizerCore.hpp"
+#include "../Native/RoomBuilder.hpp"
 #include <opencv2/calib3d.hpp>
 #include <fstream>
 #include <iostream>
@@ -32,6 +33,12 @@ int main(int argc, char** argv) {
     try {
         if (argc == 2 && std::string(argv[1]) == "--geometry-selftest") { geometryTest(); return 0; }
         if (argc == 3 && std::string(argv[1]) == "--inspect") { std::cout << roomloc::Localizer(argv[2]).metadataJSON(); return 0; }
+        if (argc == 7 && (std::string(argv[1]) == "--build-room" || std::string(argv[1]) == "--cancel-build")) {
+            roomloc::BuildOptions options; options.name = argv[5]; options.maxReferences = std::stoi(argv[6]);
+            bool cancel = std::string(argv[1]) == "--cancel-build";
+            roomloc::buildRoom(argv[2], argv[3], argv[4], options, [cancel](double fraction, const std::string&) { return !cancel || fraction < .5; });
+            std::cout << roomloc::Localizer(std::string(argv[4]) + "/map.yml").metadataJSON(); return 0;
+        }
         if (argc != 4) { std::cerr << "Usage: roomloc_native map.yml query.bgr camera.json\n"; return 1; }
         roomloc::Localizer engine(argv[1]);
         std::ifstream raw(argv[2], std::ios::binary); uint32_t dimensions[2] = {};

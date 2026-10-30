@@ -4,6 +4,7 @@
 #include <vector>
 
 namespace roomloc {
+cv::Mat extractRootSIFT(const cv::Mat& image, int count, std::vector<cv::KeyPoint>& points);
 struct Statistics {
     int correspondences = 0, uniqueMatches = 0, inliers = 0, occupiedCells = 0, references = 0;
     double inlierRatio = 0, medianError = 0;

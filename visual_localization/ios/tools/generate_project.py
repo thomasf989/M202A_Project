@@ -35,24 +35,32 @@ def main():
     package = add('opencv-package', 'XCRemoteSwiftPackageReference', repositoryURL='https://github.com/yeatse/opencv-spm.git', requirement=dict(kind='exactVersion', version='4.12.0'))
     opencv = add('opencv-product', 'XCSwiftPackageProductDependency', package=package, productName='OpenCV')
     framework = add('opencv-link', 'PBXBuildFile', productRef=opencv)
-    groups = {}; sources = []
+    zip_package = add('zip-package', 'XCRemoteSwiftPackageReference', repositoryURL='https://github.com/weichsel/ZIPFoundation.git', requirement=dict(kind='exactVersion', version='0.9.20'))
+    zip_product = add('zip-product', 'XCSwiftPackageProductDependency', package=zip_package, productName='ZIPFoundation')
+    zip_framework = add('zip-link', 'PBXBuildFile', productRef=zip_product)
+    groups = {}; sources = []; resources = []
     for folder in ['RoomLocate', 'Native']:
         refs = []
         for path in sorted((ROOT / folder).iterdir()):
             if not path.is_file():
                 continue
             types = {'.swift': 'sourcecode.swift', '.mm': 'sourcecode.cpp.objcpp', '.cpp': 'sourcecode.cpp.cpp',
-                     '.h': 'sourcecode.c.h', '.hpp': 'sourcecode.cpp.h', '.plist': 'text.plist.xml'}
+                     '.h': 'sourcecode.c.h', '.hpp': 'sourcecode.cpp.h', '.plist': 'text.plist.xml', '.txt': 'text'}
             ref = add('file:' + folder + '/' + path.name, 'PBXFileReference', lastKnownFileType=types[path.suffix], path=path.name, sourceTree='<group>')
             refs.append(ref)
             if path.suffix in ['.swift', '.mm', '.cpp']:
-                sources.append(add('compile:' + folder + '/' + path.name, 'PBXBuildFile', fileRef=ref))
+                fields = dict(fileRef=ref)
+                if path.name == 'RoomBuilder.cpp':
+                    fields['settings'] = dict(COMPILER_FLAGS='-O2')
+                sources.append(add('compile:' + folder + '/' + path.name, 'PBXBuildFile', **fields))
+            if path.suffix == '.txt':
+                resources.append(add('resource:' + folder + '/' + path.name, 'PBXBuildFile', fileRef=ref))
         groups[folder] = add('group:' + folder, 'PBXGroup', path=folder, children=refs, sourceTree='<group>')
     products = add('products-group', 'PBXGroup', name='Products', children=[product], sourceTree='<group>')
     main_group = add('main-group', 'PBXGroup', children=[groups['RoomLocate'], groups['Native'], products], sourceTree='<group>')
     source_phase = add('source-phase', 'PBXSourcesBuildPhase', buildActionMask=2147483647, files=sources, runOnlyForDeploymentPostprocessing=0)
-    framework_phase = add('framework-phase', 'PBXFrameworksBuildPhase', buildActionMask=2147483647, files=[framework], runOnlyForDeploymentPostprocessing=0)
-    resource_phase = add('resource-phase', 'PBXResourcesBuildPhase', buildActionMask=2147483647, files=[], runOnlyForDeploymentPostprocessing=0)
+    framework_phase = add('framework-phase', 'PBXFrameworksBuildPhase', buildActionMask=2147483647, files=[framework, zip_framework], runOnlyForDeploymentPostprocessing=0)
+    resource_phase = add('resource-phase', 'PBXResourcesBuildPhase', buildActionMask=2147483647, files=resources, runOnlyForDeploymentPostprocessing=0)
     project_configs, target_configs = [], []
     for configuration in ['Debug', 'Release']:
         project_settings = dict(CLANG_ENABLE_MODULES='YES', CLANG_ENABLE_OBJC_ARC='YES', CLANG_CXX_LANGUAGE_STANDARD='c++17',
@@ -62,7 +70,7 @@ def main():
             SWIFT_VERSION='5.0', SWIFT_OBJC_BRIDGING_HEADER='RoomLocate/RoomLocate-Bridging-Header.h',
             CLANG_CXX_LANGUAGE_STANDARD='c++17', TARGETED_DEVICE_FAMILY='1,2', SUPPORTED_PLATFORMS='iphoneos iphonesimulator',
             LD_RUNPATH_SEARCH_PATHS=['$(inherited)', '@executable_path/Frameworks'], ENABLE_USER_SCRIPT_SANDBOXING='YES',
-            SWIFT_STRICT_CONCURRENCY='minimal', MARKETING_VERSION='1.0', CURRENT_PROJECT_VERSION='1')
+            SWIFT_STRICT_CONCURRENCY='minimal', MARKETING_VERSION='1.1', CURRENT_PROJECT_VERSION='2')
         if configuration == 'Debug':
             project_settings.update(GCC_OPTIMIZATION_LEVEL='0', DEBUG_INFORMATION_FORMAT='dwarf', GCC_PREPROCESSOR_DEFINITIONS=['DEBUG=1', '$(inherited)'])
             target_settings.update(SWIFT_OPTIMIZATION_LEVEL='-Onone', SWIFT_ACTIVE_COMPILATION_CONDITIONS='DEBUG')
@@ -75,10 +83,10 @@ def main():
     tconfigs = add('target-configs', 'XCConfigurationList', buildConfigurations=target_configs, defaultConfigurationIsVisible=0, defaultConfigurationName='Release')
     target = add('app-target', 'PBXNativeTarget', name='RoomLocate', productName='RoomLocate', productReference=product,
                  productType='com.apple.product-type.application', buildConfigurationList=tconfigs,
-                 buildPhases=[source_phase, framework_phase, resource_phase], buildRules=[], dependencies=[], packageProductDependencies=[opencv])
+                 buildPhases=[source_phase, framework_phase, resource_phase], buildRules=[], dependencies=[], packageProductDependencies=[opencv, zip_product])
     project = add('project', 'PBXProject', attributes=dict(BuildIndependentTargetsInParallel='YES', LastUpgradeCheck='1600'),
                   buildConfigurationList=pconfigs, compatibilityVersion='Xcode 14.0', developmentRegion='en', knownRegions=['en', 'zh-Hans', 'Base'],
-                  mainGroup=main_group, productRefGroup=products, projectDirPath='', projectRoot='', targets=[target], packageReferences=[package])
+                  mainGroup=main_group, productRefGroup=products, projectDirPath='', projectRoot='', targets=[target], packageReferences=[package, zip_package])
     path = ROOT / 'RoomLocate.xcodeproj'; path.mkdir(exist_ok=True)
     (path / 'project.pbxproj').write_text('// !$*UTF8*$!\n' + encode(dict(archiveVersion=1, classes={}, objectVersion=56, objects=objects, rootObject=project)) + '\n')
     schemes = path / 'xcshareddata/xcschemes'; schemes.mkdir(parents=True, exist_ok=True)

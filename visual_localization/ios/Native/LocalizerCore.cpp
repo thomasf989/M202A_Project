@@ -126,6 +126,10 @@ void matrixJSON(std::ostream& out, const cv::Matx44d& value) {
 }
 }
 
+cv::Mat extractRootSIFT(const cv::Mat& image, int count, std::vector<cv::KeyPoint>& points) {
+    return rootSIFT(image, count, points);
+}
+
 Solution solvePose(const std::vector<cv::Point3d>& world, const std::vector<cv::Point2d>& pixels,
                    const std::vector<int>& qids, const std::vector<int>& groups,
                    const cv::Matx33d& K, cv::Size imageSize) {

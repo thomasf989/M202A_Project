@@ -5,6 +5,7 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject var model: AppModel
     @State private var importRoom = false
+    @State private var createRoom = false
     @State private var importCalibration = false
     @State private var showCamera = false
     @State private var selection: PhotosPickerItem?
@@ -22,7 +23,7 @@ struct ContentView: View {
                         if model.mesh == nil {
                             VStack(spacing: 10) {
                                 Image(systemName: "cube.transparent").font(.largeTitle)
-                                Text("导入房间包，查看三维模型")
+                                Text("导入 GLB 和参考数据，建立房间")
                             }.foregroundStyle(.secondary)
                         }
                     }.frame(height: 310).clipShape(RoundedRectangle(cornerRadius: 18))
@@ -47,8 +48,12 @@ struct ContentView: View {
                     else { Text(model.message).font(.subheadline).foregroundStyle(.secondary) }
                     if let error = model.error { Text(error).font(.subheadline).foregroundStyle(.red).textSelection(.enabled) }
                     if let result = model.result { resultCard(result) }
-                    Text("离线版 v1 使用 RootSIFT + PnP/RANSAC。房间建库在电脑完成，手机仅导入房间包并定位。")
+                    Text("GLB 导入、参考库准备与照片定位均在本机完成。使用 RootSIFT + PnP/RANSAC。")
                         .font(.caption).foregroundStyle(.secondary)
+                    DisclosureGroup("开源许可") {
+                        Text((try? String(contentsOf: Bundle.main.url(forResource: "ThirdPartyNotices", withExtension: "txt") ?? URL(fileURLWithPath: "/missing"), encoding: .utf8)) ?? "许可文件读取失败。")
+                            .font(.caption2).textSelection(.enabled)
+                    }.font(.caption)
                 }.padding()
             }
             .background(Color(uiColor: .systemGroupedBackground))
@@ -71,6 +76,7 @@ struct ContentView: View {
             .fileImporter(isPresented: $importCalibration, allowedContentTypes: [.json]) { result in
                 switch result { case .success(let url): Task { await model.importCalibration(url) }; case .failure(let error): model.error = error.localizedDescription }
             }
+            .sheet(isPresented: $createRoom) { NewRoomView(model: model) }
             .fullScreenCover(isPresented: $showCamera) {
                 CameraCapture { data in showCamera = false; if let data { Task { await model.choosePhoto(data) } } }
                     .ignoresSafeArea()
@@ -82,10 +88,15 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("当前房间").font(.headline); Spacer()
-                Button { importRoom = true } label: { Label("导入", systemImage: "square.and.arrow.down") }.disabled(model.busy)
+                Menu {
+                    Button { createRoom = true } label: { Label("GLB 和参考数据", systemImage: "plus") }
+                    Button { importRoom = true } label: { Label("已有 .roomloc 房间包", systemImage: "square.and.arrow.down") }
+                } label: { Label("导入", systemImage: "square.and.arrow.down") }.disabled(model.busy)
             }
             if model.rooms.isEmpty {
-                Text("先在电脑网页中导出 .roomloc 文件，再通过 AirDrop 或“文件”传入手机。").font(.subheadline).foregroundStyle(.secondary)
+                Text("选择已有 GLB 与参考数据 ZIP，手机会生成并保存定位参考库。").font(.subheadline).foregroundStyle(.secondary)
+                Button { createRoom = true } label: { Label("新建房间", systemImage: "plus") }
+                    .buttonStyle(.borderedProminent).disabled(model.busy)
             } else {
                 Picker("房间", selection: Binding<UUID?>(get: { model.selectedRoom?.id }, set: { id in
                     if let room = model.rooms.first(where: { $0.id == id }) { Task { await model.select(room) } }

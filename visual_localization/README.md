@@ -2,9 +2,9 @@
 
 ## iPhone offline version (development)
 
-The [iOS app and Xcode project](ios/README.md) run the RootSIFT/PnP pipeline directly on the phone. Prepare a room using the desktop app, then click **导出 iPhone 房间包** and transfer the resulting `.roomloc` file to the phone. The app imports it locally, captures or selects photos, displays camera poses in the room, and exports pose JSON. It does not require a running computer or server for localization.
+The [iOS app and Xcode project](ios/README.md) import a GLB and supported reference ZIP, build the reference map, and run RootSIFT/PnP localization directly on the phone. No running computer, Python server, or cloud processing is required. Previously exported `.roomloc` packages remain supported. Reference inputs must contain camera intrinsics and poses, such as 7-Scenes, corrected Polycam data, or a posed-images manifest. The app displays poses in the room and exports pose JSON.
 
-The C++ solver and desktop-to-native export path have portable tests. The complete Apple SDK build and camera/device performance still require validation in Xcode on a Mac. This first mobile version uses the SIFT baseline; the desktop ALIKED/LightGlue fallback remains available on the desktop.
+The C++ builder, solver and desktop-to-native export path have portable tests. Swift archive tests and Mac simulator/device build checks are included but have not run in the current Linux environment. Apple SDK compilation, signing and physical iPhone performance/accuracy still require validation. No signed IPA or TestFlight release is included. Mobile matching uses the SIFT baseline; the desktop ALIKED/LightGlue fallback remains available on the desktop.
 
 Estimate a camera's 6-DoF pose inside a mapped room from a new photo, view the result in a GLB model, and export the model with a camera marker.
 

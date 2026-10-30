@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 extension UTType {
     static let roomLocalizationPackage = UTType(exportedAs: "com.m202a.roomloc", conformingTo: .data)
+    static let roomGLBModel = UTType(importedAs: "org.khronos.glb", conformingTo: .data)
 }
 
 enum RoomLocateError: LocalizedError {

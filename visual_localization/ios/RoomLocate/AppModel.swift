@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 private struct LoadedRoom {
     let record: RoomRecord
@@ -22,7 +23,23 @@ private final class DeviceWorker: @unchecked Sendable {
             }
         }
     }
+    func start() async throws -> [RoomRecord] {
+        try await perform { try LocalRoomInput.clearOldWork(); return try RoomStore.list() }
+    }
     func rooms() async throws -> [RoomRecord] { try await perform { try RoomStore.list() } }
+    func stage(_ url: URL, model: Bool) async throws -> RoomInputFile {
+        try await perform { try LocalRoomInput.stage(url, model: model) }
+    }
+    func build(glb: URL, references: URL, name: String, maxReferences: Int, cancellation: Progress,
+               report: @escaping (Double, String) -> Void) async throws -> LoadedRoom {
+        try await perform {
+            let (record, engine) = try RoomStore.build(glb: glb, references: references, name: name,
+                maxReferences: maxReferences, cancellation: cancellation, report: report)
+            let mesh = try RoomMesh.load(at: RoomStore.directory(record.id).appendingPathComponent("mesh.bin"))
+            self.native = engine; self.current = record
+            return LoadedRoom(record: record, mesh: mesh, calibration: nil)
+        }
+    }
     func importRoom(_ url: URL) async throws -> LoadedRoom {
         try await perform {
             let (record, engine) = try RoomStore.importPackage(url)
@@ -75,21 +92,75 @@ final class AppModel: ObservableObject {
     @Published private(set) var result: LocalizationResult?
     @Published private(set) var resultURL: URL?
     @Published private(set) var busy = false
-    @Published var message = "导入房间包后，即可在手机上离线定位。"
+    @Published private(set) var building = false
+    @Published private(set) var buildProgress = 0.0
+    @Published private(set) var glbInput: RoomInputFile?
+    @Published private(set) var referenceInput: RoomInputFile?
+    @Published var message = "导入 GLB 和参考数据，在手机上建立房间并定位。"
     @Published var error: String?
     @Published var cameraMode: CameraMode = .auto
     private let worker = DeviceWorker()
     private var started = false
+    private var buildCancellation: Progress?
 
     func start() async {
         guard !started else { return }; started = true
         do {
-            rooms = try await worker.rooms()
+            rooms = try await worker.start()
             let remembered = UserDefaults.standard.string(forKey: "selectedRoom")
             if let room = rooms.first(where: { $0.id.uuidString == remembered }) ?? rooms.first { await select(room) }
         } catch { self.error = error.localizedDescription }
     }
     private func clearResult() { result = nil; resultURL = nil }
+    func stageInput(_ url: URL, isModel: Bool) async {
+        guard !busy else { return }
+        busy = true; error = nil; message = "正在读取文件，云端文件可能需要等待下载…"
+        defer { busy = false }
+        do {
+            let value = try await worker.stage(url, model: isModel)
+            let old = isModel ? glbInput : referenceInput
+            if isModel { glbInput = value } else { referenceInput = value }
+            if let old { try? FileManager.default.removeItem(at: old.url) }
+            message = "文件已保存到本机，可以继续选择或开始准备房间。"
+        } catch { self.error = error.localizedDescription; message = "文件选择未完成，请重试。" }
+    }
+    func cancelBuild() {
+        buildCancellation?.cancel()
+        message = "正在取消并清理未完成的房间…"
+    }
+    func buildRoom(name: String, maxReferences: Int) async -> Bool {
+        guard !busy, let glb = glbInput, let references = referenceInput else { return false }
+        let roomName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !roomName.isEmpty, roomName.utf8.count <= 240 else { error = "请输入不超过 80 个汉字的房间名称。"; return false }
+        let control = Progress(totalUnitCount: 1000)
+        busy = true; building = true; buildProgress = 0; error = nil; buildCancellation = control
+        message = "正在准备房间，请保持 App 在前台…"
+        let idleDisabled = UIApplication.shared.isIdleTimerDisabled
+        UIApplication.shared.isIdleTimerDisabled = true
+        let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Prepare room") { control.cancel() }
+        defer {
+            UIApplication.shared.isIdleTimerDisabled = idleDisabled
+            if backgroundTask != .invalid { UIApplication.shared.endBackgroundTask(backgroundTask) }
+            busy = false; building = false; buildCancellation = nil
+        }
+        do {
+            let loaded = try await worker.build(glb: glb.url, references: references.url, name: roomName,
+                maxReferences: maxReferences, cancellation: control, report: { [weak self] value, text in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.building, !control.isCancelled else { return }
+                        self.buildProgress = max(self.buildProgress, value); self.message = text
+                    }
+                })
+            rooms = try await worker.rooms(); accept(loaded); buildProgress = 1
+            try? FileManager.default.removeItem(at: glb.url); try? FileManager.default.removeItem(at: references.url)
+            glbInput = nil; referenceInput = nil
+            return true
+        } catch {
+            if control.isCancelled { self.error = nil; message = "房间准备已取消，已保存的房间仍可使用。" }
+            else { self.error = error.localizedDescription; message = "房间准备失败，已保留所选文件供重试。" }
+            return false
+        }
+    }
     private func accept(_ loaded: LoadedRoom) {
         selectedRoom = loaded.record; mesh = loaded.mesh; calibration = loaded.calibration
         cameraMode = .auto; photo = nil; clearResult()

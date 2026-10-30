@@ -1,5 +1,6 @@
 // Include C++ headers before UIKit, whose YES/NO macros collide with OpenCV.
 #include "../Native/LocalizerCore.hpp"
+#include "../Native/RoomBuilder.hpp"
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs/ios.h>
 #include <memory>
@@ -15,6 +16,25 @@ static NSError *RoomError(const std::exception& e) {
 
 @implementation RLNativeLocalizer {
     std::unique_ptr<roomloc::Localizer> _engine;
+}
++ (nullable NSString *)buildRoomWithGLBPath:(NSString *)glbPath
+                            referenceRoot:(NSString *)referenceRoot
+                          outputDirectory:(NSString *)outputDirectory
+                                     name:(NSString *)name
+                            maxReferences:(NSInteger)maxReferences
+                                 progress:(BOOL (^)(double, NSString *))progress
+                                    error:(NSError **)error {
+    try {
+        roomloc::BuildOptions options;
+        options.name = name.UTF8String; options.maxReferences = int(maxReferences);
+        roomloc::buildRoom(glbPath.fileSystemRepresentation, referenceRoot.fileSystemRepresentation,
+                          outputDirectory.fileSystemRepresentation, options,
+                          [progress](double value, const std::string& message) {
+            return bool(progress(value, [NSString stringWithUTF8String:message.c_str()]));
+        });
+        roomloc::Localizer engine((std::string(outputDirectory.fileSystemRepresentation) + "/map.yml"));
+        return [NSString stringWithUTF8String:engine.metadataJSON().c_str()];
+    } catch (const std::exception& e) { if (error) *error = RoomError(e); return nil; }
 }
 - (nullable instancetype)initWithMapPath:(NSString *)path error:(NSError **)error {
     self = [super init];
