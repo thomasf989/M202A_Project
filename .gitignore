@@ -9,3 +9,9 @@ sample_results/
 .pytest_cache/
 .coverage
 *.tmp
+*.roomloc
+**/ios/build/
+**/DerivedData/
+**/xcuserdata/
+*.xcuserstate
+

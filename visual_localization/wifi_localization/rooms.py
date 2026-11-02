@@ -18,7 +18,7 @@ CHUNK_BYTES=4*1024*1024
 MAX_MODEL_BYTES=512*1024*1024
 MAX_ARCHIVE_BYTES=4*1024**3
 MAX_EXPANDED_BYTES=12*1024**3
-RESULT_FILES={'query.jpg','pose.json','localized_room.glb','localization.html','inliers.jpg'}
+RESULT_FILES={'query.jpg','pose.json','localized_room.glb','localization.html','inliers.jpg','room.roomloc'}
 
 
 def safe_archive(archive):
@@ -278,6 +278,14 @@ class RoomHub:
         with self.lock:self.owners[job['id']]=app
         return job
 
+    def submit_mobile(self):
+        with self.lock:
+            app=self.current()
+            name=self.entries[self.active]['name']
+            job=app.submit_mobile(name)
+            self.owners[job['id']]=app
+        return job
+
     def job(self,id):
         with self.lock:app=self.owners.get(id)
         if app is None:raise KeyError('找不到这个任务。')
@@ -297,3 +305,4 @@ class RoomHub:
     def close(self):
         self.worker.shutdown(wait=True,cancel_futures=True)
         for app in self.apps.values():app.close()
+
