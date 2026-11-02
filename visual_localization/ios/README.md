@@ -9,7 +9,7 @@ Room Locate 可直接导入已有 **GLB + 参考数据 ZIP**，在 iPhone 上解
 1. 将对应房间的 `.glb` 模型和参考 `.zip` 保存到 iPhone 的“文件”App。可以直接在手机浏览器下载，或放在 iCloud Drive。云端文件需要下载完成才能离线使用。
 2. 打开 Room Locate，点击 **新建房间**，或 **导入 → GLB 和参考数据**。
 3. 输入房间名称，分别选择 **GLB 模型** 和 **参考数据 ZIP**。
-4. 选择最多使用的参考照片数量，点击 **在手机上准备房间**。默认最多 120 张；超出时均匀抽取训练/参考帧。更多照片会增加覆盖、耗时与内存。
+4. 选择最多使用的参考照片数量，点击 **在手机上准备房间**。默认最多 120 张，可调至 1000 张；超出时均匀抽取训练/参考帧。更多照片会增加耗时，较大的参考库会自动减少每张图的特征预算。
 5. 保持 App 在前台，等待进度完成。可以取消；未完成的房间会清理，已有房间不受影响。失败后可在当前会话保留所选文件并重试。
 6. 模型出现后，点击 **拍照**、**相册** 或 **文件** 选择查询照片，再点击 **定位这张照片**。**文件** 会打开系统文件选择器，可进入“在我的 iPhone 上”或已配置的文件提供方，选择 JPG、PNG、HEIC 等图片。7-Scenes 的 `frame-*.color.png` 可直接从文件夹选择，无需先存入相册。云端照片需先下载；每次选择一张照片，文件上限 128 MiB、6500 万像素。
 7. 成功后显示红色相机的位置与朝向，以及 X/Y/Z、内点数和耗时。点击 **导出位姿 JSON** 保存或分享结果。
@@ -22,12 +22,15 @@ GLB 与参考相机位姿必须对应同一房间、同一坐标系，坐标单�
 
 | 格式 | ZIP 内需要的内容 | 测试数据处理 |
 | --- | --- | --- |
-| 原始 7-Scenes | `TrainSplit.txt`、`TestSplit.txt` 和训练序列中的 `frame-*.color.png`、`frame-*.pose.txt`；支持官方外层 ZIP 中的 `seq-XX.zip` | 只展开/读取训练序列，测试序列可以不提供 |
+| 原始 7-Scenes，无划分文件 | `frame-*.color.png` 和对应的 `frame-*.pose.txt`；可直接选择单个 `seq-XX.zip`，或将多个序列放入一个 ZIP | 没有 `TrainSplit.txt` 时，所有上传的 RGB 帧均作为训练参考候选；单独的 `TestSplit.txt` 不过滤照片 |
+| 原始 7-Scenes，有明确划分 | `TrainSplit.txt` 和所列序列的 RGB、位姿；`TestSplit.txt` 可选；支持外层 ZIP 中嵌套一层 `seq-XX.zip` | 只展开/读取训练序列；提供测试划分时检查训练/测试不重叠；测试序列可以不提供 |
 | 已准备的 7-Scenes | `seven_scenes.json`、训练 RGB 照片和位姿 | 验证训练/测试划分，只使用 `train`；测试照片和深度可以不提供 |
 | Polycam 原始数据 | `optimized_roomplan.json`、`keyframes/corrected_cameras/*.json`、`keyframes/corrected_images/*.jpg` | 使用校正照片与相机；默认正向 alignment transform |
 | 通用照片与位姿 | `references.json`，以及其中指定的 JPG/PNG 参考照片 | 只使用 `reference` / `train`，跳过 `test` |
 
 一个 ZIP 可以有一层或多层外部文件夹，但只能包含一个房间的数据。通用格式的结构见 [references.json 示例](../wifi_localization/web/reference-format.json)。参考照片应已去畸变、以正确方向存储；相机参数和位姿必须针对这些实际像素，带 EXIF 旋转的参考图片会被拒绝。
+
+不提供 `TrainSplit.txt` 时，App 不按官方序列划分猜测训练和测试集。请只上传想用于建库的序列；需要独立评估的查询照片另外保留。每张原始 RGB 照片仍须有同名 `.pose.txt`，不需要 `.depth.png`。多个序列中的同名帧会使用不同编号。已有清单中的 `test` 标记和明确提供的 `TrainSplit.txt` 仍然生效。
 
 手机建库从 GLB 在 RGB 相机像素网格中渲染深度，再建立图像与三维点的对应。它不使用未配准的 Kinect 原始深度；Polycam 的手机建库也使用模型渲染深度，与桌面 Polycam 传感器深度路径不同，需要独立检查精度。原始 7-Scenes 默认使用近似 RGB 焦距 525 和 `diag(1,-1,-1,1)` 的世界到 GLB 变换；自定义对齐或内参请使用准备好的 `seven_scenes.json` 或通用位姿清单。
 
@@ -87,7 +90,7 @@ python -m wifi_localization export-mobile \
 - GLB 必须是静态三角面模型，几何数据内嵌，不支持 Draco、Meshopt、稀疏访问器、骨骼、变形或 GPU 实例化。显示模型保留原坐标并简化为顶点颜色网格，纹理细节可能减少。
 - GLB 上限 192 MiB、200 万顶点、200 万三角面，JSON 场景描述上限 16 MiB；参考图片上限 2400 万像素。
 - 输入 ZIP 上限 4 GiB，累计解包上限 6 GiB、80000 个条目；使用流式解包、路径与重复项检查、CRC 校验和符号链接拒绝。准备房间需要足够临时空间。
-- 手机建库最多选 200 张参考照片，每张最多 1500 个特征；保存前先验证新库，再提交房间记录。已有 `.roomloc` 兼容最多 1000 张参考帧、400000 个特征的限制。
+- 手机建库默认最多选 120 张，可调至 1000 张。默认每张最多 1500 个特征，参考总预算为 300000 个特征；1000 张时每张最多 300 个。查询照片仍使用原来的 1500 特征预算。保存前先验证新库，再提交房间记录。已有 `.roomloc` 兼容最多 1000 张参考帧、400000 个特征的限制。
 - 保存的参考 YAML 上限 256 MiB，显示网格上限 64 MiB、200000 顶点和 300000 三角面。速度、峰值内存、热量和定位精度需要在目标 iPhone 实测，不承诺固定分钟数。
 
 ## 6. 构建检查与测试
@@ -106,7 +109,7 @@ bash check_on_mac.command
 swift test
 ```
 
-测试有效 ZIP、路径遍历、符号链接、重复路径、CRC 损坏、取消清理、已有目录保护、大小限制和官方嵌套 ZIP 的训练/测试隔离。
+测试有效 ZIP、路径遍历、符号链接、重复路径、CRC 损坏、取消清理、已有目录保护、大小限制、有划分时的训练/测试隔离，以及无划分时直接导入序列或展开全部嵌套序列 ZIP。
 
 可移植 C++ 核心可在安装 OpenCV 4 开发库的 Mac/Linux 上编译：
 
@@ -123,7 +126,7 @@ ROOMLOC_NATIVE_CLI="$PWD/ios/build/native/roomloc_native" \
   python -m unittest discover -s tests -v
 ```
 
-`test_phone_build.py` 直接调用与 App 相同的本机建库核心，检查独立查询视角恢复、参考照片哈希、OpenGL/OpenCV 坐标转换、GLB 节点变换、7-Scenes 划分、Polycam 校正相机、均匀抽帧、无效输入与取消回滚。`test_mobile.py` 保留桌面导出到手机核心的兼容检查。可移植测试通过不等于 Apple SDK 构建或 iPhone 精度已经通过。
+`test_phone_build.py` 直接调用与 App 相同的本机建库核心，检查独立查询视角恢复、参考照片哈希、OpenGL/OpenCV 坐标转换、GLB 节点变换、7-Scenes 有/无划分、多序列重名帧、缺失位姿、1000 张参考库的建库及重新加载、Polycam 校正相机、均匀抽帧、无效输入与取消回滚。1000 张压力用例复用四张合成纹理照片，验证数量、特征和保存边界，不代表 1000 个真实视角的定位精度。`test_mobile.py` 保留桌面导出到手机核心的兼容检查。可移植测试通过不等于 Apple SDK 构建或 iPhone 精度已经通过。
 
 新增源码或修改依赖后运行 `python3 tools/generate_project.py` 更新工程。重新生成会清除手动配置的 Team 与 Bundle Identifier，操作前记录自己的设置。建库 C++ 文件在 Debug 中也开启优化，避免几何渲染循环因无优化而明显变慢。
 

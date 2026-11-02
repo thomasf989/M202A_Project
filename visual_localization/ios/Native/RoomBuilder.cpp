@@ -136,15 +136,19 @@ std::string cameraJSON(const cv::FileNode& c) {
 }
 
 Capture readCapture(const fs::path& source, int maximum, const BuildProgress& progress) {
-    std::set<fs::path> roots; size_t visited = 0;
+    std::set<fs::path> roots; std::vector<fs::path> rawImages; size_t visited = 0;
+    const std::regex rawFrame("frame-[0-9]+\\.color\\.png");
     for (const auto& entry : fs::recursive_directory_iterator(source)) {
         if (++visited > 100000 || entry.is_symlink()) throw std::runtime_error("参考数据包含符号链接或文件数量过多。");
         if (visited % 256 == 0) checkpoint(progress);
+        if (!entry.is_regular_file()) continue;
         const auto name = entry.path().filename();
         if (name == "references.json" || name == "seven_scenes.json" || name == "TrainSplit.txt" || name == "optimized_roomplan.json") roots.insert(entry.path().parent_path());
+        if (std::regex_match(name.string(), rawFrame)) rawImages.push_back(entry.path());
     }
-    if (roots.size() != 1) throw std::runtime_error("请选择单个房间的参考 ZIP：支持 7-Scenes、Polycam 原始数据，或含 references.json 的照片与位姿数据。");
-    fs::path root = *roots.begin(); Capture capture; std::set<std::string> seen;
+    if (roots.size() > 1) throw std::runtime_error("参考 ZIP 中有多个数据说明目录，请只选择一个房间。");
+    if (roots.empty() && rawImages.empty()) throw std::runtime_error("参考 ZIP 未找到可识别的数据：7-Scenes 需要 frame-*.color.png 及对应 .pose.txt，普通照片需要含相机参数和位姿的 references.json。");
+    fs::path root = roots.empty() ? source : *roots.begin(); Capture capture; std::set<std::string> seen;
     if (fs::exists(root / "references.json")) {
         auto meta = json(root / "references.json"); auto m = meta.root();
         if (std::string(m["format"]) != "posed-images-v1") throw std::runtime_error("references.json 的 format 必须为 posed-images-v1。");
@@ -184,19 +188,35 @@ Capture readCapture(const fs::path& source, int maximum, const BuildProgress& pr
             catch (const std::domain_error&) { /* Official invalid tracking frames are not references. */ }
         }
         capture.format = "7-scenes"; capture.camera = cameraJSON(m["rgb_intrinsics"]);
-    } else if (fs::exists(root / "TrainSplit.txt")) {
-        auto train = split(root / "TrainSplit.txt"), test = split(root / "TestSplit.txt"); disjoint(train, test);
+    } else if (roots.empty() || fs::exists(root / "TrainSplit.txt")) {
         auto profile = cv::FileStorage("{\"width\":640,\"height\":480,\"fx\":525.0,\"fy\":525.0,\"cx\":320.0,\"cy\":240.0}", cv::FileStorage::READ | cv::FileStorage::MEMORY | cv::FileStorage::FORMAT_JSON);
-        for (const auto& seq : train) {
-            // The test sequence directory and its images/poses are never opened.
-            if (!fs::is_directory(root / seq)) continue;
-            std::vector<fs::path> images;
-            for (const auto& e : fs::directory_iterator(root / seq)) if (std::regex_match(e.path().filename().string(), std::regex("frame-[0-9]+\\.color\\.png"))) images.push_back(e.path());
-            std::sort(images.begin(), images.end());
-            for (const auto& image : images) {
-                std::string stem = image.filename().string(); stem.resize(stem.size() - 10);
-                // Validate only the uniformly sampled subset of large raw datasets below.
-                capture.frames.push_back({seq + "_" + stem, image, cv::Matx44d::eye(), cv::Matx33d(525, 0, 320, 0, 525, 240, 0, 0, 1), {640, 480}});
+        if (fs::exists(root / "TrainSplit.txt")) {
+            auto train = split(root / "TrainSplit.txt");
+            if (fs::exists(root / "TestSplit.txt")) disjoint(train, split(root / "TestSplit.txt"));
+            for (const auto& seq : train) {
+                // Explicit splits keep their existing meaning. Test photos are never opened.
+                if (!fs::is_directory(root / seq)) continue;
+                std::vector<fs::path> images;
+                for (const auto& e : fs::directory_iterator(root / seq)) if (e.is_regular_file() && std::regex_match(e.path().filename().string(), rawFrame)) images.push_back(e.path());
+                std::sort(images.begin(), images.end());
+                for (const auto& image : images) {
+                    std::string stem = image.filename().string(); stem.resize(stem.size() - 10);
+                    capture.frames.push_back({seq + "_" + stem, image, cv::Matx44d::eye(), cv::Matx33d(525, 0, 320, 0, 525, 240, 0, 0, 1), {640, 480}});
+                }
+            }
+        } else {
+            // A bare sequence ZIP, flat frames, or several sequence directories:
+            // without TrainSplit.txt every uploaded RGB frame is a reference.
+            std::sort(rawImages.begin(), rawImages.end());
+            for (const auto& image : rawImages) {
+                if (capture.frames.size() % 128 == 0) checkpoint(progress);
+                auto pose = image; std::string stem = image.filename().string(); stem.resize(stem.size() - 10);
+                pose.replace_filename(stem + ".pose.txt");
+                if (!fs::is_regular_file(pose)) throw std::runtime_error("参考照片缺少对应的位姿文件：" + pose.filename().string());
+                // An ordinal prefix avoids collisions between equal frame names
+                // in different sequences, including arbitrary wrapper folders.
+                capture.frames.push_back({"raw-" + std::to_string(capture.frames.size()) + "_" + stem,
+                    image, cv::Matx44d::eye(), cv::Matx33d(525, 0, 320, 0, 525, 240, 0, 0, 1), {640, 480}});
             }
         }
         capture.format = "7-scenes"; capture.camera = cameraJSON(profile.root());
@@ -228,7 +248,7 @@ Capture readCapture(const fs::path& source, int maximum, const BuildProgress& pr
     }
     capture.frames = std::move(selected);
     if (capture.frames.size() < 4) throw std::runtime_error("至少需要 4 张带有效相机参数与位姿的参考照片。普通相册 ZIP 无法直接建库。");
-    report(progress, .08, "已检查训练与测试划分，正在读取 GLB…");
+    report(progress, .08, "已检查参考照片和位姿，正在读取 GLB…");
     return capture;
 }
 
@@ -511,7 +531,7 @@ void writeDisplayMesh(const Mesh& full, const fs::path& path, const BuildProgres
 
 void buildRoom(const std::string& glbPath, const std::string& referenceRoot, const std::string& outputDirectory,
                const BuildOptions& options, const BuildProgress& progress) {
-    if (options.maxReferences < 4 || options.maxReferences > 200 || options.featuresPerImage < 64 || options.featuresPerImage > 2000 || options.name.empty() || options.name.size() > 240)
+    if (options.maxReferences < 4 || options.maxReferences > 1000 || options.featuresPerImage < 64 || options.featuresPerImage > 2000 || options.name.empty() || options.name.size() > 240)
         throw std::runtime_error("房间名称或参考库设置超出手机限制。");
     fs::path output(outputDirectory); fs::create_directories(output);
     for (const auto& file : {"map.yml", "mesh.bin", "map.yml.part", "mesh.bin.part"}) if (fs::exists(output / file)) throw std::runtime_error("请使用新的房间目录，不能覆盖已有参考库。");
@@ -519,13 +539,19 @@ void buildRoom(const std::string& glbPath, const std::string& referenceRoot, con
         report(progress, .02, "正在识别参考数据格式…");
         auto capture = readCapture(referenceRoot, options.maxReferences, progress);
         auto mesh = readMesh(glbPath, progress); std::vector<Reference> references;
+        // Keep the existing 256 MiB map and 400,000-feature reader limits.
+        // 300,000 rows of descriptors/world points/valid flags fit below the
+        // file limit with Base64 overhead, including a 1,000-frame index.
+        const int featureLimit = std::min(options.featuresPerImage, int(300000 / capture.frames.size()));
+        const int vocabularySamplesPerFrame = std::min(160, int(32000 / capture.frames.size()));
         cv::Mat samples;
         for (size_t i = 0; i < capture.frames.size(); ++i) {
             report(progress, .16 + .57 * i / capture.frames.size(), "正在处理参考照片 " + std::to_string(i + 1) + "/" + std::to_string(capture.frames.size()));
-            auto ref = extract(mesh, capture.frames[i], options.featuresPerImage, progress);
+            auto ref = extract(mesh, capture.frames[i], featureLimit, progress);
             if (ref.descriptors.rows < 12 || cv::countNonZero(ref.valid) < 12) continue;
             // Bound vocabulary training memory independent of the number of reference features.
-            for (int j = 0; j < ref.descriptors.rows; j += std::max(1, ref.descriptors.rows / 160)) if (samples.rows < 32000) samples.push_back(ref.descriptors.row(j));
+            const int take = std::min(vocabularySamplesPerFrame, ref.descriptors.rows);
+            for (int j = 0; j < take; ++j) samples.push_back(ref.descriptors.row(j * ref.descriptors.rows / take));
             references.push_back(std::move(ref));
         }
         if (references.size() < 4) throw std::runtime_error("不足 4 张参考照片能对应到 GLB。请检查模型与参考位姿的坐标、单位及纹理覆盖。");
@@ -553,6 +579,7 @@ void buildRoom(const std::string& glbPath, const std::string& referenceRoot, con
         map.write("units", "meters"); map.write("camera_convention", "opencv-camera-to-world");
         map.write("dataset_format", capture.format); map.write("dataset_camera_json", capture.camera);
         map.write("nfeatures", options.featuresPerImage);
+        map.write("reference_feature_limit", featureLimit);
         map << "centers" << centers << "idf" << idf << "vectors" << vectors << "references" << "[";
         for (const auto& ref : references) map << "{" << "id" << ref.id << "image_sha256" << ref.hash << "descriptors" << ref.descriptors << "world_points" << ref.world << "valid" << ref.valid << "}";
         map << "]"; map.release();

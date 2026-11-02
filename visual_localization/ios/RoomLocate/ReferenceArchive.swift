@@ -30,22 +30,36 @@ enum ReferenceArchive {
         let budget = Budget()
         try unpack(source, to: destination, budget: budget, cancellation: cancellation, report: report)
 
-        // Official outer scene archives contain seq-XX.zip. Only official
-        // training sequence archives are expanded, never test sequence ZIPs.
+        // Official outer scene archives contain seq-XX.zip. Respect an explicit
+        // TrainSplit.txt; without one all uploaded sequence ZIPs are references.
         let enumerator = manager.enumerator(at: destination, includingPropertiesForKeys: [.isRegularFileKey])
-        let splits = (enumerator?.allObjects as? [URL] ?? []).filter { $0.lastPathComponent == "TrainSplit.txt" }
+        let files = (enumerator?.allObjects as? [URL] ?? []).filter {
+            (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        }
+        let splits = files.filter { $0.lastPathComponent == "TrainSplit.txt" }
+        guard splits.count <= 1 else {
+            throw ReferenceImportError(message: "参考 ZIP 中有多个划分文件，请只选择一个房间。")
+        }
+        var nestedArchives = [URL]()
         if splits.count == 1, let train = splits.first {
             let sequences = try sequenceNames(String(contentsOf: train, encoding: .utf8))
-            for (index, sequence) in sequences.enumerated() {
-                try check(cancellation)
+            for sequence in sequences {
                 let nested = train.deletingLastPathComponent().appendingPathComponent(sequence + ".zip")
-                if manager.fileExists(atPath: nested.path) {
-                    report(0.5, "正在解包训练序列 \(index + 1)/\(sequences.count)…")
-                    try unpack(nested, to: train.deletingLastPathComponent(), budget: budget,
-                               cancellation: cancellation, report: { _, text in report(0.5, text) })
-                    try manager.removeItem(at: nested)
-                }
+                if manager.fileExists(atPath: nested.path) { nestedArchives.append(nested) }
             }
+        } else {
+            // Expand one bounded layer of named sequence ZIPs. Arbitrary nested
+            // archives are not recursively expanded; the shared budgets apply.
+            nestedArchives = files.filter {
+                $0.lastPathComponent.range(of: "^seq-[0-9]+\\.zip$", options: .regularExpression) != nil
+            }.sorted { $0.path < $1.path }
+        }
+        for (index, nested) in nestedArchives.enumerated() {
+            try check(cancellation)
+            report(0.5, "正在解包参考序列 \(index + 1)/\(nestedArchives.count)…")
+            try unpack(nested, to: nested.deletingLastPathComponent(), budget: budget,
+                       cancellation: cancellation, report: { _, text in report(0.5, text) })
+            try manager.removeItem(at: nested)
         }
         try check(cancellation)
         complete = true

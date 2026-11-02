@@ -84,4 +84,30 @@ final class ReferenceArchiveTests: XCTestCase {
         XCTAssertThrowsError(try extract(source))
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("output").path))
     }
+
+    func testBareSequenceArchiveKeepsPhotosAndPosesWithoutSplit() throws {
+        let source = try archive([("frame-000000.color.png", Data([1, 2]), .file),
+                                  ("frame-000000.pose.txt", Data("pose".utf8), .file),
+                                  ("frame-000000.depth.png", Data([8]), .file)], named: "seq-01.zip")
+        let output = try extract(source)
+        XCTAssertEqual(try Data(contentsOf: output.appendingPathComponent("frame-000000.color.png")), Data([1, 2]))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: output.appendingPathComponent("frame-000000.pose.txt").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.appendingPathComponent("frame-000000.depth.png").path))
+    }
+
+    func testNoTrainSplitExpandsEveryUploadedSequenceZIP() throws {
+        let first = try archive([("seq-01/frame-000000.color.png", Data([1]), .file),
+                                 ("seq-01/frame-000000.pose.txt", Data([2]), .file)], named: "first.zip")
+        let second = try archive([("seq-03/frame-000000.color.png", Data([3]), .file),
+                                  ("seq-03/frame-000000.depth.png", Data([4]), .file)], named: "second.zip")
+        let source = try archive([("Heads/TestSplit.txt", Data("sequence3\n".utf8), .file),
+                                  ("Heads/seq-01.zip", try Data(contentsOf: first), .file),
+                                  ("Heads/seq-03.zip", try Data(contentsOf: second), .file)], named: "scene.zip")
+        let output = try extract(source)
+        for sequence in ["seq-01", "seq-03"] {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: output.appendingPathComponent("Heads/\(sequence)/frame-000000.color.png").path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: output.appendingPathComponent("Heads/\(sequence).zip").path))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.appendingPathComponent("Heads/seq-03/frame-000000.depth.png").path))
+    }
 }

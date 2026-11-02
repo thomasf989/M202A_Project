@@ -43,10 +43,18 @@ class PhoneBuildTests(unittest.TestCase):
         (folder / 'references.json').write_text(json.dumps(meta))
         return meta
 
-    def build(self, source, output, maximum=120, cancel=False, glb=None):
+    def build(self, source, output, maximum=120, cancel=False, glb=None, timeout=90):
         return subprocess.run([self.binary, '--cancel-build' if cancel else '--build-room',
                                str(glb or self.capture.glb), str(source), str(output), 'Phone room', str(maximum)],
-                              capture_output=True, text=True, timeout=90)
+                              capture_output=True, text=True, timeout=timeout)
+
+    def raw_frames(self, folder, ids=None):
+        folder.mkdir(parents=True, exist_ok=True)
+        flip = np.diag([1., -1., -1., 1.])
+        for i, id in enumerate(ids or self.capture.reference_ids):
+            stem = f'frame-{i:06d}'
+            shutil.copy2(self.capture.frames[id].image, folder / (stem + '.color.png'))
+            np.savetxt(folder / (stem + '.pose.txt'), flip @ self.capture.frames[id].T_world_cv)
 
     def inspect(self, path):
         storage = cv2.FileStorage(str(path), cv2.FILE_STORAGE_READ)
@@ -147,6 +155,83 @@ class PhoneBuildTests(unittest.TestCase):
             result = self.build(source, output, maximum=4)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual([r[0] for r in self.inspect(output / 'map.yml')], ['view-0', 'view-2', 'view-4', 'view-6'])
+
+    def test_raw_flat_sequence_builds_without_any_split_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / 'input'; self.raw_frames(source)
+            result = self.build(source, Path(d) / 'room')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            refs = self.inspect(Path(d) / 'room/map.yml')
+            self.assertEqual(len(refs), 4)
+            for i, (_, hash_, world, valid) in enumerate(refs):
+                image = source / f'frame-{i:06d}.color.png'
+                self.assertEqual(hash_, hashlib.sha256(image.read_bytes()).hexdigest())
+                np.testing.assert_allclose(world[valid.ravel().astype(bool), 2], 4, atol=1e-5)
+
+    def test_no_train_split_uses_all_sequences_even_with_test_split(self):
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / 'input'
+            self.raw_frames(source / 'Heads/seq-01', self.capture.reference_ids[:2])
+            self.raw_frames(source / 'Heads/seq-03', self.capture.reference_ids[2:])
+            # With no TrainSplit, this old test label must not exclude uploaded RGBs.
+            (source / 'Heads/TestSplit.txt').write_text('sequence3\n')
+            result = self.build(source, Path(d) / 'room')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            refs = self.inspect(Path(d) / 'room/map.yml')
+            self.assertEqual(len({row[0] for row in refs}), 4)
+            expected = {hashlib.sha256(self.capture.frames[id].image.read_bytes()).hexdigest()
+                        for id in self.capture.reference_ids}
+            self.assertEqual({row[1] for row in refs}, expected)
+
+    def test_no_split_still_requires_matching_poses(self):
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / 'input'; self.raw_frames(source)
+            (source / 'frame-000002.pose.txt').unlink()
+            result = self.build(source, Path(d) / 'room')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('frame-000002.pose.txt', result.stderr)
+            self.assertFalse((Path(d) / 'room/map.yml').exists())
+
+    def test_explicit_train_split_does_not_require_test_split(self):
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / 'input'; self.raw_frames(source / 'seq-01')
+            self.raw_frames(source / 'seq-03')
+            (source / 'TrainSplit.txt').write_text('sequence1\n')
+            result = self.build(source, Path(d) / 'room')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            refs = self.inspect(Path(d) / 'room/map.yml')
+            self.assertEqual(len(refs), 4)
+            self.assertTrue(all(row[0].startswith('seq-01_') for row in refs))
+
+    def test_thousand_reference_map_builds_and_reopens_with_bounded_features(self):
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / 'input'; source.mkdir(); output = Path(d) / 'room'
+            meta = self.manifest(source)
+            # Reuse four textured fixtures to stress the 1,000-row index and
+            # serialized feature budget, without storing 1,000 source images.
+            refs = meta['frames'][:4]
+            meta['frames'] = [dict(refs[i % 4], id=f'view-{i}') for i in range(1000)]
+            (source / 'references.json').write_text(json.dumps(meta))
+            rejected = self.build(source, Path(d) / 'too-many', maximum=1001)
+            self.assertNotEqual(rejected.returncode, 0)
+            result = self.build(source, output, maximum=1000, timeout=300)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)['references'], 1000)
+            self.assertLessEqual((output / 'map.yml').stat().st_size, 256 * 1024 * 1024)
+            storage = cv2.FileStorage(str(output / 'map.yml'), cv2.FILE_STORAGE_READ)
+            try:
+                self.assertEqual(int(storage.getNode('reference_feature_limit').real()), 300)
+                refs = storage.getNode('references')
+                sizes = [refs.at(i).getNode('descriptors').mat().shape[0] for i in range(refs.size())]
+                self.assertEqual(refs.size(), 1000)
+                self.assertTrue(all(12 <= n <= 300 for n in sizes))
+                self.assertLessEqual(sum(sizes), 300000)
+            finally:
+                storage.release()
+            reopened = subprocess.run([self.binary, '--inspect', str(output / 'map.yml')],
+                                      capture_output=True, text=True, timeout=90)
+            self.assertEqual(reopened.returncode, 0, reopened.stderr)
+            self.assertEqual(json.loads(reopened.stdout)['references'], 1000)
 
     def test_cancellation_and_invalid_input_preserve_existing_rooms(self):
         with tempfile.TemporaryDirectory() as d:

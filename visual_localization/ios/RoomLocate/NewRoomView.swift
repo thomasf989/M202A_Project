@@ -36,13 +36,13 @@ struct NewRoomView: View {
                 }
                 Section("参考数据要求") {
                     Text("支持 7-Scenes 原始或已准备数据、Polycam 校正后的原始数据，以及含 references.json 的照片与位姿数据。")
-                    Text("至少需要 4 张有效参考照片，并包含相机参数、拍摄位姿。模型与参考数据须使用对应坐标和米制单位。测试组照片不会参与建库。")
+                    Text("至少需要 4 张有效参考照片及对应位姿。7-Scenes 可直接上传 seq-XX.zip，无需划分文件；没有 TrainSplit.txt 时，上传的照片全部作为训练参考，有划分文件或清单时按其定义读取。模型与参考数据须使用对应坐标和米制单位。")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
                 Section("建库规模") {
                     Text("最多使用 \(Int(maxReferences)) 张参考照片")
-                    Slider(value: $maxReferences, in: 20...200, step: 20).disabled(model.busy)
-                    Text("超出上限时均匀抽取参考帧。增加照片能扩大覆盖范围，也会增加耗时和内存。建库时请保持 App 在前台。")
+                    Slider(value: $maxReferences, in: 20...1000, step: 20).disabled(model.busy)
+                    Text("超出上限时均匀抽取参考帧。最多可选 1000 张；较大参考库会自动减少每张参考图的特征预算以控制内存。增加照片也会增加耗时，建库时请保持 App 在前台。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if model.busy {
