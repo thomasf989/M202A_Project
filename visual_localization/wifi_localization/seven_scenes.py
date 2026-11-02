@@ -172,30 +172,41 @@ class SevenScenesCapture:
         self.ids=sorted(self.frames)
         if len(self.reference_ids)<4 or (not self.query_ids and not self.meta.get('localization_only')):
             raise ValueError('7-Scenes requires separate reference and test frames')
-        self._mesh=None;self._depth_cache={}
+        self._mesh=None;self._depth_cache={};self._ray=None
 
     def fingerprint(self):
         h=hashlib.sha256((self.root/'seven_scenes.json').read_bytes());h.update(sha256(self.glb).encode())
-        h.update(b'mesh-rgb-depth-v1')
+        h.update(b'mesh-rgb-depth-v2-bilinear-raycast')
         for id in self.ids:
             for p in [self.frames[id].image,self.frames[id].camera,self.frames[id].depth]:h.update(sha256(p).encode())
         return h.hexdigest()
 
-    def world_points(self, frame, pixels, min_confidence=127, edge_threshold=.15):
-        from .raster import mesh_depth
+    def world_points(self, frame, pixels, min_confidence=127, edge_threshold=.75):
+        """MeshLoc-style bilinear mesh-depth lifting for 7-Scenes RGB."""
+        from .raster import mesh_depth, sample_depth_bilinear, raycast_pixels
         if self._mesh is None:
             from .visualization import load_mesh
+            from trimesh.ray.ray_triangle import RayMeshIntersector
             self._mesh=load_mesh(self.glb)
+            self._ray=RayMeshIntersector(self._mesh)
         if frame.id not in self._depth_cache:
             if len(self._depth_cache)>=4:self._depth_cache.pop(next(iter(self._depth_cache)))
-            self._depth_cache[frame.id]=mesh_depth(self._mesh,frame.T_world_cv,frame.K,frame.width,frame.height)
-        d=self._depth_cache[frame.id];uv=np.asarray(pixels,dtype=float).reshape(-1,2)
-        ij=np.rint(uv).astype(int);x,y=np.clip(ij,[1,1],[frame.width-2,frame.height-2]).T
-        valid=(ij[:,0]>=1)&(ij[:,0]<frame.width-1)&(ij[:,1]>=1)&(ij[:,1]<frame.height-1)
-        patches=np.stack([d[y+dy,x+dx] for dy in [-1,0,1] for dx in [-1,0,1]],axis=1)
-        z=d[y,x];valid &= np.isfinite(patches).all(1)&(z>.15)&(z<5.)
-        with np.errstate(invalid='ignore'):
-            valid &= np.ptp(patches,axis=1)<edge_threshold
-        safe_z=np.where(valid,z,0)
-        pc=np.column_stack([(uv[:,0]-frame.K[0,2])/frame.K[0,0]*safe_z,(uv[:,1]-frame.K[1,2])/frame.K[1,1]*safe_z,safe_z])
-        return pc@frame.T_world_cv[:3,:3].T+frame.T_world_cv[:3,3],valid
+            self._depth_cache[frame.id]=mesh_depth(
+                self._mesh,frame.T_world_cv,frame.K,frame.width,frame.height,near=.05,far=8.)
+        uv=np.asarray(pixels,dtype=float).reshape(-1,2)
+        z,valid,spread=sample_depth_bilinear(self._depth_cache[frame.id],uv,min_depth=.15,max_depth=5.)
+        safe_z=np.where(valid,z,0.0)
+        pc=np.column_stack([(uv[:,0]-frame.K[0,2])/frame.K[0,0]*safe_z,
+                            (uv[:,1]-frame.K[1,2])/frame.K[1,1]*safe_z,safe_z])
+        xyz=pc@frame.T_world_cv[:3,:3].T+frame.T_world_cv[:3,3]
+        need_ray=(~valid)|(spread>float(edge_threshold))
+        if need_ray.any():
+            try:
+                ray_xyz,ray_valid=raycast_pixels(self._ray,frame.T_world_cv,frame.K,uv[need_ray],.15,5.)
+                idx=np.flatnonzero(need_ray)
+                good_idx=idx[ray_valid]
+                xyz[good_idx]=ray_xyz[ray_valid]
+                valid[idx]=ray_valid
+            except Exception:
+                valid &= spread<=float(edge_threshold)
+        return xyz,valid

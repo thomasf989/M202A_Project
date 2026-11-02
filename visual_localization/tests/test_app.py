@@ -136,7 +136,7 @@ class HttpIntegrationTests(unittest.TestCase):
         calibration=dict(width=1024,height=768,fx=718,fy=718,cx=512,cy=384)
         with self.post('/api/calibration',json.dumps(calibration).encode()) as response:self.assertTrue(json.load(response)['saved'])
         with self.get('/api/status') as response:self.assertTrue(json.load(response)['has_calibration'])
-        with self.get('/') as response:self.assertIn('定位这张照片',response.read().decode())
+        with self.get('/') as response:self.assertIn('Localize This Photo',response.read().decode())
         with self.assertRaises(HTTPError) as caught:
             self.post('/api/sample',b'{}',extra={'Origin':'http://unrelated.example'})
         self.assertEqual(caught.exception.code,403)

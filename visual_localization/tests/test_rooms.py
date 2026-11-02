@@ -49,7 +49,7 @@ class UploadContracts(unittest.TestCase):
             doc=json.dumps({'asset':{'version':'2.0'},'buffers':[{'uri':'../../outside.bin'}]}).encode()
             doc+=b' '*((-len(doc))%4)
             p.write_bytes(struct.pack('<4sII',b'glTF',2,20+len(doc))+struct.pack('<II',len(doc),0x4e4f534a)+doc)
-            with self.assertRaisesRegex(ValueError,'外部文件'):validate_glb(p)
+            with self.assertRaisesRegex(ValueError,'external files'):validate_glb(p)
         model=PROJECT/'data/seven_scenes/chess/room.glb'
         if model.exists():validate_glb(model)
 
@@ -173,7 +173,7 @@ class RoomHttpTests(unittest.TestCase):
         mid=self.upload(self.capture.glb,'model');rid=self.upload(archive,'references')
         room=self.request('/api/rooms',dict(name='Incomplete',model_upload=mid,references_upload=rid))
         result=self.wait_room(room['id']);self.assertEqual(result['phase'],'error')
-        self.assertFalse(result['ready']);self.assertIn('相机参数和位姿',result['message'])
+        self.assertFalse(result['ready']);self.assertIn('camera parameters and poses',result['message'])
         self.request('/api/rooms/select',{'id':'chess'});self.assertTrue(self.request('/api/status')['ready'])
 
 

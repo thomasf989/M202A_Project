@@ -1,42 +1,42 @@
-# 网页上传与自动建库
+# Web Upload and Automatic Reference-Library Creation
 
-在 Mac 上运行 `bash run_web.command` 或 `bash run_app.command`，浏览器自动打开本机网页。
-第一次需要联网安装依赖。终端窗口保持运行，退出按 Control+C。
-`bash run_7scenes.command` 也进入该网页，默认选中 Chess。
+On macOS, run `bash run_web.command` or `bash run_app.command`. Your browser will automatically open the local web page.
+An internet connection is required to install dependencies the first time. Keep the terminal window running and press Control+C to exit.
+`bash run_7scenes.command` also opens this page with Chess selected by default.
 
-## 使用步骤
+## Instructions
 
-点击“添加房间”，选择模型 GLB、参考数据 ZIP，然后点击“上传并准备房间”。
-上传结束后自动检查格式和相机信息、读取模型、提取参考特征、建立定位参考库。
-准备完成后弹窗关闭，此时即可选择新的查询照片定位，或试用示例照片。
-结果包含 GLB 坐标系内的米制位置、镜头朝向、带相机标记的彩色 GLB、位姿 JSON 和离线三维页面。
+Click “Add Room,” select a model GLB and reference-data ZIP, and then click “Upload and Prepare Room.”
+After the upload finishes, the program automatically checks the format and camera information, reads the model, extracts reference features, and builds the localization reference library.
+When preparation is complete, the dialog closes. You can then select a new query photo to localize or try a sample photo.
+Results include the metric position in the GLB coordinate system, camera direction, a colored GLB with a camera marker, pose JSON, and an offline 3D page.
 
-已添加的房间保存在本机，下次启动继续使用。切换房间会同时切换参考库与查询相机设置。
-切换后，先前任务的结果下载仍对应其原房间。查询照片不自动加入参考库。
+Added rooms are saved locally and remain available the next time the program starts. Switching rooms also switches the reference library and query-camera settings.
+After switching, downloads from earlier jobs still correspond to their original rooms. Query photos are not added to the reference library automatically.
 
 ## Polycam
 
-上传同次扫描的原始导出 ZIP 与 GLB。ZIP 中需要 `optimized_roomplan.json`、
-`keyframes/corrected_images/`、`corrected_cameras/`、`depth/` 和 `confidence/`。
-参考相机参数、位姿与对齐矩阵从导出数据读取。会用采样深度与模型做一致性检查，拒绝明显坐标不匹配的模型。
-保留原模型的坐标与米制尺度。普通照片 ZIP 不等于 Polycam 原始导出 ZIP。
+Upload a raw export ZIP and GLB from the same scan. The ZIP must contain `optimized_roomplan.json`,
+`keyframes/corrected_images/`, `corrected_cameras/`, `depth/`, and `confidence/`.
+Reference-camera parameters, poses, and the alignment matrix are read from the exported data. Sampled depth is checked against the model for consistency, and models with clearly mismatched coordinates are rejected.
+Preserve the original model coordinates and metric scale. An ordinary photo ZIP is not the same as a raw Polycam export ZIP.
 
 ## 7-Scenes
 
-支持官方外层场景 ZIP、提取后重新打包的单场景，以及本程序准备的参考包。
-原始 ZIP 按官方 `TrainSplit.txt` / `TestSplit.txt` 划分，不把测试图加入参考库。
-原始数据默认训练每 10 帧抽样、测试每 50 帧抽样，可在高级选项修改。
-已准备包带 `seven_scenes.json`，保留其帧列表、内参与坐标设置，不再次抽样。
+The program supports an official outer scene ZIP, a single scene that has been extracted and repackaged, and reference packages prepared by this program.
+Raw ZIPs are divided according to the official `TrainSplit.txt` / `TestSplit.txt`; test images are not added to the reference library.
+By default, raw training data is sampled every 10 frames and test data every 50 frames. These values can be changed under Advanced Options.
+A prepared package includes `seven_scenes.json`; its frame list, intrinsics, and coordinate settings are preserved without resampling.
 
-官方原始数据的默认模型约定匹配本项目提供的 Y 向上 GLB：世界坐标左乘 `diag(1,-1,-1,1)`。
-如果自己的 GLB 保留数据集原世界坐标，在高级选项选择对应选项；也可以填写自定义 4×4 刚体矩阵。
-原始 RGB 和深度不完全标定，适配器使用在 RGB 网格上从模型渲染的深度，默认 RGB 内参是近似值。
-网页允许仅有参考序列的包用于实际定位；命令行评估导入仍要求独立测试帧。
-若只有少量原始参考图，请将抽样间隔设为 1，以保证至少有 4 张参考图。
+The default model convention for official raw data matches the Y-up GLB provided by this project: world coordinates are left-multiplied by `diag(1,-1,-1,1)`.
+If your GLB preserves the dataset's original world coordinates, select the corresponding Advanced Options setting. You may also enter a custom 4×4 rigid transformation matrix.
+The raw RGB and depth data are not fully calibrated. The adapter uses depth rendered from the model on the RGB grid, and the default RGB intrinsics are approximate.
+The web page allows reference-only packages for real localization; command-line evaluation imports still require independent test frames.
+If you have only a few raw reference images, set the sampling interval to 1 to ensure that at least four reference images are available.
 
-## 任意房间的带位姿照片
+## Posed Photos for Any Room
 
-将参考照片及 `references.json` 放在同一个 ZIP 中：
+Place the reference photos and `references.json` in the same ZIP:
 
 ```text
 references.json
@@ -45,32 +45,32 @@ images/photo-002.jpg
 ...
 ```
 
-`references.json` 的结构可在网页下载，也可查看 `wifi_localization/web/reference-format.json`。
-字段包括：
+You can download the `references.json` structure from the web page or view `wifi_localization/web/reference-format.json`.
+Its fields are:
 
-| 字段 | 意义 |
+| Field | Meaning |
 |---|---|
-| `format` | 固定为 `posed-images-v1` |
-| `intrinsics` | 默认的 width、height、fx、fy、cx、cy，可在每帧内覆盖 |
-| `camera_convention` | `opencv`：X 右、Y 下、Z 前；或 `opengl`：X 右、Y 上、Z 后 |
-| `world_to_glb` | 从参考位姿所用世界坐标到上传 GLB 的 4×4 刚体变换，默认单位矩阵 |
-| `frames[].id` | 唯一帧编号，仅字母、数字、下划线或连字符 |
-| `frames[].image` | ZIP 中的相对照片路径 |
-| `frames[].camera_to_world` | 列向量约定的相机到世界 4×4 矩阵，位置单位米 |
-| `frames[].split` | `reference`/`train` 进入参考库；`test` 保持留出，默认 reference |
+| `format` | Fixed value: `posed-images-v1` |
+| `intrinsics` | Default width, height, fx, fy, cx, and cy; these may be overridden per frame |
+| `camera_convention` | `opencv`: X right, Y down, Z forward; or `opengl`: X right, Y up, Z backward |
+| `world_to_glb` | A 4×4 rigid transformation from the world coordinates used by the reference poses to the uploaded GLB; defaults to the identity matrix |
+| `frames[].id` | Unique frame ID containing only letters, numbers, underscores, or hyphens |
+| `frames[].image` | Relative photo path inside the ZIP |
+| `frames[].camera_to_world` | Column-vector-convention 4×4 camera-to-world matrix with position measured in meters |
+| `frames[].split` | `reference`/`train` enters the reference library; `test` remains held out; defaults to `reference` |
 
-最少 4 张参考照片。照片必须已去畸变，按内参及位姿所对应的像素方向存储，不依赖 EXIF 旋转。
-这里从模型渲染参考图的深度，不要求另外提供传感器深度。模型本身必须与参考位姿正确对齐。
-不同手机或镜头的新照片，使用自动焦距估算或导入自己的查询相机参数；不能假设与参考相机相同。
-模板中的相机值与位置只是格式示例，必须替换成真实数据。
+At least four reference photos are required. Photos must be undistorted and stored in the pixel orientation corresponding to the intrinsics and poses; EXIF rotation is not used.
+Reference-image depth is rendered from the model, so separate sensor depth is not required. The model itself must be aligned correctly with the reference poses.
+For new photos taken with a different phone or lens, use automatic focal-length estimation or import your own query-camera parameters; do not assume they match the reference camera.
+The camera values and positions in the template are format examples only and must be replaced with real data.
 
-## 上传、保存与性能
+## Uploads, Storage, and Performance
 
-GLB 最大 512 MB，参考 ZIP 最大 4 GB，解压数据上限 12 GB。采用 4 MB 分块，不在请求中整体缓存大文件。
-中断后可重新选择同一文件，按原偏移续传；上传记录在本机浏览器和程序目录中保留。
-相同模型、相同 ZIP 与相同导入选项会复用已有房间参考库。
-7-Scenes 嵌套序列使用磁盘临时文件，避免把每个 500 MB 的序列 ZIP 整体放入内存。
-建库是每个房间的一次性工作，后续照片复用缓存。增强匹配权重仍可能在首次使用时联网下载。
+The maximum GLB size is 512 MB, the maximum reference ZIP size is 4 GB, and expanded data is limited to 12 GB. Files are transferred in 4 MB chunks, so large files are not cached in full within a request.
+After an interruption, select the same file again to resume from the previous offset. Upload records are retained in the local browser and program directory.
+The program reuses an existing room reference library when the model, ZIP, and import options are identical.
+Nested 7-Scenes sequences use temporary disk files to avoid loading each 500 MB sequence ZIP entirely into memory.
+Building the library is a one-time task for each room; subsequent photos reuse the cache. Enhanced matching weights may still be downloaded from the internet on first use.
 
-新房间保存在 `outputs/web/rooms/<id>/data`，特征库与预测结果保存在其 `output/` 下。
-这是单用户本机网页，不是已部署的公网服务。房间数据与定位计算均在运行程序的电脑上。
+New rooms are saved under `outputs/web/rooms/<id>/data`, with the feature library and prediction results under its `output/` directory.
+This is a single-user local web page, not a deployed public service. Room data and localization calculations remain on the computer running the program.

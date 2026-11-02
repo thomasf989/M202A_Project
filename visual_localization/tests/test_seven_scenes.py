@@ -13,7 +13,7 @@ from wifi_localization.capture import load_capture
 from wifi_localization.seven_scenes import prepare_seven_scenes, DEFAULT_WORLD_TO_GLB, dataset_pose
 from wifi_localization.features import build_database, Database
 from wifi_localization.polycam import read_json, write_json
-from wifi_localization.raster import _depth
+from wifi_localization.raster import _depth, sample_depth_bilinear
 from wifi_localization.visualization import load_mesh
 
 
@@ -47,6 +47,23 @@ class SevenScenesTests(unittest.TestCase):
         np.testing.assert_allclose(f.T_world_cv,DEFAULT_WORLD_TO_GLB)
         mesh=load_mesh(c.glb)
         self.assertGreater(len(np.unique(mesh.visual.vertex_colors,axis=0)),1)
+
+    def test_bilinear_depth_sampling_uses_fractional_keypoint_coordinates(self):
+        d=np.array([[1.,2.],[3.,4.]],dtype=float)
+        z,valid,spread=sample_depth_bilinear(d,[[.5,.5]])
+        self.assertTrue(valid[0])
+        self.assertAlmostEqual(float(z[0]),2.5,places=6)
+        self.assertAlmostEqual(float(spread[0]),3.0,places=6)
+
+    def test_near_plane_crossing_triangle_is_clipped_not_dropped(self):
+        K=np.array([[40.,0,20.],[0,40.,20.],[0,0,1.]])
+        # One vertex lies behind the near plane while most of the triangle is
+        # visible. The old rasterizer discarded this entire triangle.
+        vertices=np.array([[0.,-1.,.01],[1.,1.,2.],[-1.,1.,2.]],float)
+        faces=np.array([[0,1,2]],int)
+        image=_depth(vertices,faces,K,41,41,.05,10.)
+        self.assertTrue(np.isfinite(image).any())
+        self.assertTrue(np.isfinite(image[20,20]))
 
     def test_perspective_depth_and_occlusion(self):
         K=np.array([[10.,0,10],[0,10,10],[0,0,1.]])

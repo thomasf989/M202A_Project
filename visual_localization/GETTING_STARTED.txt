@@ -1,0 +1,15 @@
+Room Photo Localization v1.4
+
+1. Open the program folder in a terminal.
+2. Run bash run_web.command.
+3. When the browser opens, click “Add Room.”
+4. Upload a GLB model and reference-data ZIP.
+5. Wait for the reference library to be ready, then add a new photo to localize.
+6. You can switch between saved rooms and download a GLB with a camera marker.
+
+Reference data must include known camera intrinsics, poses, and model-coordinate information.
+The program supports raw Polycam exports, 7-Scenes, and reference photos with a references.json file.
+Models, reference photos, caches, and experiment results are not included in the GitHub source code.
+Photos and localization calculations are processed locally. Keep the terminal running and press Control+C to exit.
+An internet connection is required to install dependencies on first launch. Enhanced matching also downloads pretrained weights on first use.
+For detailed formats, see README.md and docs/WEB_UPLOAD.md.

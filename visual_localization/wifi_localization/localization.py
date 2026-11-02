@@ -9,12 +9,14 @@ from .features import extract, match
 
 @dataclass
 class Settings:
-    top_k: int = 12
-    ratio: float = .75
-    reprojection_px: float = 4.
-    min_inliers: int = 12
-    min_inlier_ratio: float = .12
-    iterations: int = 4000
+    # Robust interactive defaults.  top_k is primarily used by the CPU
+    # baseline; the learned pipeline may expand a global shortlist further.
+    top_k: int = 20
+    ratio: float = .78
+    reprojection_px: float = 5.
+    min_inliers: int = 10
+    min_inlier_ratio: float = .08
+    iterations: int = 6000
     seed: int = 42
 
 
@@ -38,7 +40,7 @@ def project_errors(xyz, xy, K, rvec, tvec):
 
 
 def unique_inliers(qids, errors, valid):
-    """One vote per query feature, even if it matched multiple reference frames."""
+    """One vote per query feature, even if it matched multiple references."""
     chosen = []
     seen = set()
     for i in np.argsort(errors):
@@ -50,14 +52,23 @@ def unique_inliers(qids, errors, valid):
 
 
 def _quality_score(inliers, ratio, median_px, occupied, supporting_refs, min_inliers):
-    """A conservative 0..1 diagnostic confidence, not a calibrated probability."""
+    """A conservative 0..1 diagnostic confidence, not a probability."""
     inlier_term = min(1.0, inliers/max(min_inliers*3.0, 1.0))
-    ratio_term = np.clip((ratio-.08)/.42, 0., 1.)
-    reproj_term = float(np.exp(-max(median_px, 0.)/3.0))
-    coverage_term = min(1.0, occupied/8.0)
+    ratio_term = np.clip((ratio-.06)/.40, 0., 1.)
+    reproj_term = float(np.exp(-max(median_px, 0.)/3.5))
+    coverage_term = min(1.0, occupied/7.0)
     reference_term = min(1.0, supporting_refs/3.0)
     score = .28*inlier_term + .24*ratio_term + .22*reproj_term + .16*coverage_term + .10*reference_term
     return float(np.clip(score, 0., 1.))
+
+
+def _pnp_flags():
+    flags = [cv2.SOLVEPNP_EPNP]
+    for name in ['SOLVEPNP_SQPNP', 'SOLVEPNP_AP3P']:
+        value = getattr(cv2, name, None)
+        if value is not None and value not in flags:
+            flags.append(value)
+    return flags
 
 
 def solve_pose(xyz, xy, qids, group_ids, K, image_size, settings):
@@ -66,32 +77,46 @@ def solve_pose(xyz, xy, qids, group_ids, K, image_size, settings):
     xyz,xy,qids,group_ids=xyz[finite],xy[finite],qids[finite],group_ids[finite]
     if len(xyz) < settings.min_inliers:
         return None, {'reason': 'too_few_2d_3d_correspondences', 'correspondences': len(xyz)}
+
     hypotheses = []
     # Pooled and per-reference hypotheses avoid one bad reference dominating.
     groups = [np.arange(len(xyz))] + [np.flatnonzero(group_ids == g) for g in np.unique(group_ids)]
+    flags = _pnp_flags()
     for indices in groups:
         if len(indices) < settings.min_inliers:
             continue
-        cv2.setRNGSeed(settings.seed)
-        ok, r, t, inl = cv2.solvePnPRansac(np.ascontiguousarray(xyz[indices], dtype=np.float64),
-            np.ascontiguousarray(xy[indices], dtype=np.float64), K, None,
-            iterationsCount=settings.iterations, reprojectionError=settings.reprojection_px,
-            confidence=.999, flags=cv2.SOLVEPNP_EPNP)
-        if not ok or inl is None or not np.isfinite(r).all() or not np.isfinite(t).all():
-            continue
-        e, pos = project_errors(xyz, xy, K, r, t)
-        good = unique_inliers(qids, e, pos & (e < settings.reprojection_px))
-        if len(good):
-            hypotheses.append((len(good), -float(np.median(e[good])), r, t, good))
+        for flag in flags:
+            cv2.setRNGSeed(settings.seed)
+            try:
+                ok, r, t, inl = cv2.solvePnPRansac(
+                    np.ascontiguousarray(xyz[indices], dtype=np.float64),
+                    np.ascontiguousarray(xy[indices], dtype=np.float64), K, None,
+                    iterationsCount=settings.iterations,
+                    reprojectionError=settings.reprojection_px,
+                    confidence=.999, flags=flag)
+            except cv2.error:
+                continue
+            if not ok or inl is None or not np.isfinite(r).all() or not np.isfinite(t).all():
+                continue
+            e, pos = project_errors(xyz, xy, K, r, t)
+            good = unique_inliers(qids, e, pos & (e < settings.reprojection_px))
+            if len(good):
+                hypotheses.append((len(good), -float(np.median(e[good])), r, t, good, int(flag)))
     if not hypotheses:
         return None, {'reason': 'pnp_ransac_failed', 'correspondences': len(xyz)}
-    _, _, r, t, inliers = max(hypotheses, key=lambda h: h[:2])
-    for _ in range(2):
+
+    _, _, r, t, inliers, best_flag = max(hypotheses, key=lambda h: h[:2])
+    for _ in range(3):
         if len(inliers) < settings.min_inliers:
             break
-        r, t = cv2.solvePnPRefineLM(xyz[inliers], xy[inliers], K, None, r, t)
+        try:
+            r, t = cv2.solvePnPRefineLM(xyz[inliers], xy[inliers], K, None, r, t)
+        except cv2.error:
+            break
         e, positive = project_errors(xyz, xy, K, r, t)
         inliers = unique_inliers(qids, e, positive & (e < settings.reprojection_px))
+
+    e, positive = project_errors(xyz, xy, K, r, t)
     total_unique = len(np.unique(qids))
     fraction = len(inliers)/max(total_unique, 1)
     width, height = image_size
@@ -105,22 +130,29 @@ def solve_pose(xyz, xy, qids, group_ids, K, image_size, settings):
     p90=float(np.percentile(e[inliers],90)) if len(inliers) else float('inf')
     stats = dict(correspondences=len(xyz), unique_query_matches=total_unique, inliers=len(inliers),
                  inlier_ratio=fraction, occupied_grid_cells=occupied, supporting_references=supporting_refs,
-                 median_reprojection_px=median, p90_reprojection_px=p90)
+                 median_reprojection_px=median, p90_reprojection_px=p90, pnp_flag=best_flag)
     stats['pose_confidence']=_quality_score(len(inliers),fraction,median,occupied,supporting_refs,settings.min_inliers)
     stats['confidence_note']='Heuristic geometric confidence (0..1), not a calibrated probability.'
-    if len(inliers) < settings.min_inliers or fraction < settings.min_inlier_ratio or occupied < 4:
+
+    # Portrait/narrow-FOV photos sometimes put valid geometry in only three of
+    # the 4x4 cells.  Permit that when support is otherwise strong; still reject
+    # weak, spatially concentrated accidental matches.
+    coverage_ok = occupied >= 3 or (occupied >= 2 and len(inliers) >= 28 and fraction >= .18 and median <= 2.5)
+    if len(inliers) < settings.min_inliers or fraction < settings.min_inlier_ratio or not coverage_ok:
         return None, dict(stats, reason='insufficient_geometric_support')
+
     spread = np.linalg.svd(xyz[inliers]-xyz[inliers].mean(axis=0), compute_uv=False)
-    if len(spread)<2 or spread[1] < .03:
+    if len(spread)<2 or spread[1] < .02:
         return None, dict(stats, reason='nearly_collinear_3d_points')
+
     R = cv2.Rodrigues(r)[0]
     T = np.eye(4)
     T[:3, :3], T[:3, 3] = R.T, -R.T @ t.reshape(3)
     return T, dict(stats, inlier_indices=inliers.tolist())
 
 
-def consensus_position(capture, ranking, radius=.75):
-    chosen = ranking[:8]
+def consensus_position(capture, ranking, radius=.9):
+    chosen = ranking[:10]
     centers = np.array([capture.frames[id].T_world_cv[:3, 3] for id, _ in chosen])
     weights = np.array([max(score, 1e-6)**4 for _, score in chosen])
     dist = np.linalg.norm(centers[:, None]-centers[None, :], axis=2)
@@ -130,8 +162,9 @@ def consensus_position(capture, ranking, radius=.75):
     return np.average(centers[good], axis=0, weights=weights[good]).tolist()
 
 
-def localize(capture, db, rgb, K, settings=None, exclude=(), query_hash=None, candidate_intrinsics=None):
-    """CPU baseline retained for ablation/fallback."""
+def localize(capture, db, rgb, K, settings=None, exclude=(), query_hash=None, candidate_intrinsics=None,
+             candidate_ranking=None):
+    """CPU RootSIFT baseline/fallback, optionally restricted by an external rank."""
     start = time.perf_counter()
     s = settings or Settings()
     cv2.setRNGSeed(s.seed)
@@ -139,9 +172,11 @@ def localize(capture, db, rgb, K, settings=None, exclude=(), query_hash=None, ca
     excluded = set(exclude)
     if query_hash:
         excluded.update(id for id, h in db.meta['reference_image_hashes'].items() if h == query_hash)
-    rank = db.rank(dq, excluded)
+    rank = ([(rid,float(score)) for rid,score in candidate_ranking if rid not in excluded]
+            if candidate_ranking is not None else db.rank(dq, excluded))
     result = dict(success=False, settings=asdict(s), query_features=len(xyq),
-                  excluded_reference_count=len(set(db.ids) & excluded), retrieval_method='RootSIFT TF-IDF')
+                  excluded_reference_count=len(set(db.ids) & excluded),
+                  retrieval_method='External shortlist + RootSIFT local matching' if candidate_ranking is not None else 'RootSIFT TF-IDF')
     if not rank:
         return dict(result, reason='no_eligible_references', elapsed_seconds=time.perf_counter()-start)
     result['retrieval'] = [dict(id=id, score=score) for id, score in rank[:s.top_k]]
@@ -175,7 +210,7 @@ def localize(capture, db, rgb, K, settings=None, exclude=(), query_hash=None, ca
             T, stats, K = max(solutions, key=lambda x: (x[1]['inliers'], x[1].get('pose_confidence',0), -x[1]['median_reprojection_px']))
         else:
             T = None
-            stats=max(failures,key=lambda x:(x.get('inliers',0),x.get('inlier_ratio',0))) if failures else {'reason':'pnp_ransac_failed'}
+            stats=max(failures,key=lambda x:(x.get('inliers',0),x.get('inlier_ratio',0),-x.get('median_reprojection_px',1e9))) if failures else {'reason':'pnp_ransac_failed'}
         result.update(stats)
         if T is not None:
             result.update(success=True, pose=pose_dict(T))

@@ -24,13 +24,13 @@ RESULT_FILES={'query.jpg','pose.json','localized_room.glb','localization.html','
 def safe_archive(archive):
     """Reject traversal/symlinks and excessive expansion before extraction."""
     with zipfile.ZipFile(archive) as z:
-        if len(z.infolist())>100000:raise ValueError('ZIP 文件条目过多。')
-        if sum(i.file_size for i in z.infolist())>MAX_EXPANDED_BYTES:raise ValueError('ZIP 解压后超过 12 GB。')
+        if len(z.infolist())>100000:raise ValueError('The ZIP file contains too many entries.')
+        if sum(i.file_size for i in z.infolist())>MAX_EXPANDED_BYTES:raise ValueError('The expanded ZIP file exceeds 12 GB.')
         names=[]
         for info in z.infolist():
             p=PurePosixPath(info.filename)
             if '\\' in info.filename or p.is_absolute() or '..' in p.parts or (info.external_attr>>16)&0o170000==0o120000:
-                raise ValueError('ZIP 包含不安全的文件路径。')
+                raise ValueError('The ZIP file contains an unsafe file path.')
             if not info.is_dir() and not any(x.startswith('.') or x=='__MACOSX' for x in p.parts):names.append(info.filename)
         return names
 
@@ -39,23 +39,23 @@ def validate_glb(path):
     with Path(path).open('rb') as f:
         header=f.read(12)
         chunk_header=f.read(8)
-        if len(chunk_header)!=8:raise ValueError('GLB 文件不完整。')
+        if len(chunk_header)!=8:raise ValueError('The GLB file is incomplete.')
         json_length,json_type=struct.unpack('<II',chunk_header)
-        if json_type!=0x4e4f534a or json_length>64*1024*1024:raise ValueError('GLB 头信息无效。')
+        if json_type!=0x4e4f534a or json_length>64*1024*1024:raise ValueError('The GLB header is invalid.')
         document=json.loads(f.read(json_length))
         for resource in document.get('buffers',[])+document.get('images',[]):
             uri=resource.get('uri')
             if uri is not None and (not isinstance(uri,str) or not uri.startswith('data:')):
-                raise ValueError('GLB 必须内嵌几何和纹理，不能引用外部文件。')
-    if len(header)!=12:raise ValueError('GLB 文件不完整。')
+                raise ValueError('The GLB must embed its geometry and textures; it cannot reference external files.')
+    if len(header)!=12:raise ValueError('The GLB file is incomplete.')
     magic,version,length=struct.unpack('<4sII',header)
-    if magic!=b'glTF' or version!=2 or length!=Path(path).stat().st_size:raise ValueError('请选择有效的 GLB 2.0 模型。')
+    if magic!=b'glTF' or version!=2 or length!=Path(path).stat().st_size:raise ValueError('Select a valid GLB 2.0 model.')
     import trimesh
     scene=trimesh.load_scene(path,file_type='glb')
-    if not scene.geometry:raise ValueError('模型中没有可用的三维网格。')
+    if not scene.geometry:raise ValueError('The model does not contain a usable 3D mesh.')
     for mesh in scene.geometry.values():
         if not hasattr(mesh,'faces') or not len(mesh.faces) or not np.isfinite(mesh.vertices).all():
-            raise ValueError('模型包含无效网格。')
+            raise ValueError('The model contains an invalid mesh.')
 
 
 def prepare_room(archive, model, output, options):
@@ -66,10 +66,10 @@ def prepare_room(archive, model, output, options):
         if matches:roots[kind]=matches
     requested=options.get('format','auto')
     if requested=='auto':
-        if len(roots)!=1:raise ValueError('无法唯一识别数据格式。请上传完整 Polycam 原始数据、7-Scenes 数据，或照片与 references.json。只有普通照片还缺少相机参数和位姿。')
+        if len(roots)!=1:raise ValueError('The data format could not be identified uniquely. Upload complete raw Polycam data, 7-Scenes data, or photos with references.json. Ordinary photos alone do not include the required camera parameters and poses.')
         kind=next(iter(roots))
     else:kind=requested
-    if kind not in roots or len(roots[kind])!=1:raise ValueError('ZIP 应只包含一个房间及其相机信息。')
+    if kind not in roots or len(roots[kind])!=1:raise ValueError('The ZIP should contain only one room and its camera information.')
     prefix=roots[kind][0]
     if kind=='polycam':
         prepare_capture(archive,model,output)
@@ -77,7 +77,7 @@ def prepare_room(archive, model, output, options):
         from .seven_scenes import prepare_seven_scenes
         transform=options.get('world_to_glb')
         stride=int(options.get('train_stride',10));test_stride=int(options.get('test_stride',50))
-        if not 1<=stride<=10000 or not 1<=test_stride<=10000:raise ValueError('抽样间隔需在 1 到 10000 之间。')
+        if not 1<=stride<=10000 or not 1<=test_stride<=10000:raise ValueError('The sampling interval must be between 1 and 10,000.')
         if prefix+'seven_scenes.json' in names:
             with zipfile.ZipFile(archive) as z:
                 for name in names:
@@ -95,9 +95,9 @@ def prepare_room(archive, model, output, options):
                     dest=output/str(rel);dest.parent.mkdir(parents=True,exist_ok=True)
                     with z.open(name) as src,dest.open('wb') as dst:shutil.copyfileobj(src,dst)
         shutil.copy2(model,output/'room.glb')
-    else:raise ValueError('不支持的数据格式。')
+    else:raise ValueError('Unsupported data format.')
     capture=load_capture(output)
-    if len(getattr(capture,'reference_ids',capture.ids))<4:raise ValueError('至少需要 4 张有效参考照片。')
+    if len(getattr(capture,'reference_ids',capture.ids))<4:raise ValueError('At least four valid reference photos are required.')
     if kind=='polycam':
         from scipy.spatial import cKDTree
         from .visualization import load_mesh
@@ -106,7 +106,7 @@ def prepare_room(archive, model, output, options):
             frame=capture.frames[id];yy,xx=np.mgrid[frame.height//6:frame.height:frame.height//5,frame.width//6:frame.width:frame.width//5]
             xyz,valid=capture.world_points(frame,np.column_stack([xx.ravel(),yy.ravel()]));points.extend(xyz[valid])
         if len(points)<8 or float(np.median(tree.query(np.asarray(points))[0]))>.20:
-            raise ValueError('GLB 与参考照片的三维坐标不一致。请使用同次扫描导出的原始数据和模型，保留坐标及米制尺度。')
+            raise ValueError('The GLB and reference photos use inconsistent 3D coordinates. Use raw data and a model exported from the same scan, preserving the coordinates and metric scale.')
     return kind
 
 
@@ -122,11 +122,11 @@ class RoomHub:
         self.entries=stored.get('rooms',{});self.active=stored.get('active')
         for id,config in self.builtins.items():
             if Path(config['data']).is_dir():
-                self.entries[id]=dict(id=id,name=config['name'],builtin=True,phase='saved',message='选择后加载',created=0)
+                self.entries[id]=dict(id=id,name=config['name'],builtin=True,phase='saved',message='Select to load',created=0)
         for id,e in self.entries.items():
             if e.get('builtin'):continue
             if e.get('phase') in ['importing','building']:
-                e.update(phase='saved' if self._data(id).exists() else 'error',message='可重新选择以继续准备房间')
+                e.update(phase='saved' if self._data(id).exists() else 'error',message='Select it again to continue preparing the room')
         if initial in self.entries:self.active=initial
         if self.active not in self.entries:self.active=next(iter(self.entries),None)
         self._save()
@@ -157,7 +157,7 @@ class RoomHub:
     def current(self):
         with self.lock:
             app=self.apps.get(self.active)
-            if app is None:raise ValueError('请先添加或选择已准备好的房间。')
+            if app is None:raise ValueError('Add or select a prepared room first.')
             return app
 
     @property
@@ -167,7 +167,7 @@ class RoomHub:
 
     def room_status(self,id):
         with self.lock:
-            if id not in self.entries:raise KeyError('找不到这个房间。')
+            if id not in self.entries:raise KeyError('This room could not be found.')
             e=dict(self.entries[id]);app=self.apps.get(id)
             if app:
                 e.update(app.status());e['room_id']=id
@@ -176,7 +176,7 @@ class RoomHub:
 
     def status(self):
         with self.lock:
-            if not self.active:return dict(phase='empty',ready=False,progress=0,message='先上传模型与参考数据，建立你的第一个房间',room_id=None,room_frames=0,references=0,has_calibration=False,dataset_format=None,scene_name='尚未选择房间')
+            if not self.active:return dict(phase='empty',ready=False,progress=0,message='Upload a model and reference data to create your first room',room_id=None,room_frames=0,references=0,has_calibration=False,dataset_format=None,scene_name='No room selected')
             e=self.room_status(self.active)
             e.update(room_id=self.active,scene_name=self.entries[self.active]['name'])
             e.setdefault('has_calibration',False);e.setdefault('references',0);e.setdefault('room_frames',0)
@@ -188,54 +188,54 @@ class RoomHub:
 
     def select_room(self,id):
         with self.lock:
-            if id not in self.entries:raise ValueError('找不到这个房间。')
+            if id not in self.entries:raise ValueError('This room could not be found.')
             entry=self.entries[id]
             if entry.get('reuse_id'):return self.select_room(entry['reuse_id'])
             if entry.get('phase')=='importing':self.active=id;self._save();return self.status()
-            if entry.get('phase')=='error':raise ValueError(entry.get('message','请重新上传房间数据。'))
+            if entry.get('phase')=='error':raise ValueError(entry.get('message','Upload the room data again.'))
             try:self._open(id)
             except Exception as e:
-                entry.update(phase='error',message=f'房间准备未完成，请重新上传：{e}');self._save()
+                entry.update(phase='error',message=f'Room preparation did not finish. Upload it again: {e}');self._save()
                 raise ValueError(entry['message']) from e
             self.active=id;self._save();return self.status()
 
     def create_upload(self,value):
         kind=value.get('kind');name=Path(str(value.get('filename',''))).name[:160];size=value.get('size')
         maximum=MAX_MODEL_BYTES if kind=='model' else MAX_ARCHIVE_BYTES
-        if kind not in ['model','references'] or type(size) is not int or not 0<size<=maximum:raise ValueError('请选择 GLB（最大 512 MB）或参考 ZIP（最大 4 GB）。')
-        if not name.lower().endswith('.glb' if kind=='model' else '.zip'):raise ValueError('文件类型不正确。')
+        if kind not in ['model','references'] or type(size) is not int or not 0<size<=maximum:raise ValueError('Select a GLB (up to 512 MB) or reference ZIP (up to 4 GB).')
+        if not name.lower().endswith('.glb' if kind=='model' else '.zip'):raise ValueError('The file type is invalid.')
         with self.upload_lock:
             id=uuid.uuid4().hex;meta=dict(id=id,kind=kind,filename=name,size=size,created=time.time())
             (self.root/'uploads'/f'{id}.part').touch();write_json(self.root/'uploads'/f'{id}.json',meta)
             return dict(meta,offset=0,complete=False,chunk_bytes=CHUNK_BYTES)
 
     def upload_status(self,id):
-        if not isinstance(id,str) or len(id)!=32 or any(c not in '0123456789abcdef' for c in id):raise ValueError('无效上传编号。')
+        if not isinstance(id,str) or len(id)!=32 or any(c not in '0123456789abcdef' for c in id):raise ValueError('Invalid upload ID.')
         with self.upload_lock:
             try:meta=read_json(self.root/'uploads'/f'{id}.json')
-            except FileNotFoundError:raise ValueError('上传记录不存在，请重新选择文件。')
+            except FileNotFoundError:raise ValueError('The upload record does not exist. Select the file again.')
             offset=(self.root/'uploads'/f'{id}.part').stat().st_size
             return dict(meta,offset=offset,complete=offset==meta['size'],chunk_bytes=CHUNK_BYTES)
 
     def append_upload(self,id,offset,body):
         with self.upload_lock:
             row=self.upload_status(id)
-            if offset!=row['offset']:raise ValueError('上传偏移不一致，请重试以续传。')
-            if not 0<len(body)<=CHUNK_BYTES or offset+len(body)>row['size']:raise ValueError('上传分块大小不正确。')
+            if offset!=row['offset']:raise ValueError('The upload offset does not match. Try again to resume the upload.')
+            if not 0<len(body)<=CHUNK_BYTES or offset+len(body)>row['size']:raise ValueError('The upload chunk size is invalid.')
             with (self.root/'uploads'/f'{id}.part').open('ab') as f:f.write(body)
             return self.upload_status(id)
 
     def create_room(self,value):
-        name=str(value.get('name','')).strip()[:80] or '新房间'
+        name=str(value.get('name','')).strip()[:80] or 'New Room'
         model=self.upload_status(value.get('model_upload'));refs=self.upload_status(value.get('references_upload'))
-        if model['kind']!='model' or refs['kind']!='references' or not model['complete'] or not refs['complete']:raise ValueError('请先完成模型和参考数据上传。')
+        if model['kind']!='model' or refs['kind']!='references' or not model['complete'] or not refs['complete']:raise ValueError('Finish uploading the model and reference data first.')
         options=value.get('options',{})
-        if not isinstance(options,dict):raise ValueError('导入选项格式不正确。')
+        if not isinstance(options,dict):raise ValueError('The import options have an invalid format.')
         options={k:options[k] for k in ['format','train_stride','test_stride','rgb_focal','world_to_glb'] if k in options}
         with self.lock:
-            if any(not f.done() for f in self.futures):raise ValueError('已有房间正在建库，请等待完成。')
+            if any(not f.done() for f in self.futures):raise ValueError('A reference library is already being built for another room. Please wait for it to finish.')
             id=uuid.uuid4().hex
-            self.entries[id]=dict(id=id,name=name,builtin=False,phase='importing',message='正在检查文件与相机信息…',progress=.02,created=time.time())
+            self.entries[id]=dict(id=id,name=name,builtin=False,phase='importing',message='Checking files and camera information…',progress=.02,created=time.time())
             self.active=id;self._save()
             self.futures.append(self.worker.submit(self._import,id,model['id'],refs['id'],options))
             return self.room_status(id)
@@ -247,7 +247,7 @@ class RoomHub:
             with self.lock:
                 same=next((eid for eid,e in self.entries.items() if eid!=id and e.get('source_key')==key and (self._paths(eid)[1]/'database/database.json').is_file()),None)
                 if same:
-                    self.entries[id].update(reuse_id=same,phase='saved',message='相同数据已有参考库，直接复用。')
+                    self.entries[id].update(reuse_id=same,phase='saved',message='A reference library already exists for the same data and will be reused.')
                     self.select_room(same);return
             kind=prepare_room(refs,model,self._data(id),options)
             # Reuse a validated, matching built-in map when available. Never
@@ -264,14 +264,14 @@ class RoomHub:
                     if (source/'learned_features').is_dir():shutil.copytree(source/'learned_features',dest/'learned_features')
                     break
             with self.lock:
-                self.entries[id].update(phase='building',message='文件检查完成，正在建立参考库…',format=kind,source_key=key)
+                self.entries[id].update(phase='building',message='File checks complete. Building the reference library…',format=kind,source_key=key)
                 app=self._open(id);self._save()
             app.initialization.result()
             with self.lock:
                 state=app.status();self.entries[id].update(phase='ready' if state['ready'] else 'error',message=state['message']);self._save()
         except Exception as e:
             with self.lock:
-                self.entries[id].update(phase='error',message=f'房间准备失败：{e}');self._save()
+                self.entries[id].update(phase='error',message=f'Room preparation failed: {e}');self._save()
 
     def submit(self,*args,**kwargs):
         app=self.current();job=app.submit(*args,**kwargs)
@@ -280,17 +280,17 @@ class RoomHub:
 
     def job(self,id):
         with self.lock:app=self.owners.get(id)
-        if app is None:raise KeyError('找不到这个任务。')
+        if app is None:raise KeyError('This job could not be found.')
         return app.job(id)
 
     def result_path(self,id,name):
-        if name not in RESULT_FILES:raise KeyError('未知结果文件。')
+        if name not in RESULT_FILES:raise KeyError('Unknown result file.')
         with self.lock:
             if id in self.owners:return self.owners[id].output/'queries'/id/name
             for room_id in self.entries:
                 path=self._paths(room_id)[1]/'queries'/id/name
                 if path.is_file():return path
-        raise KeyError('结果文件不存在。')
+        raise KeyError('The result file does not exist.')
 
     def save_calibration(self,value):return self.current().save_calibration(value)
 

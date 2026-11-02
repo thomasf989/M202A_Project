@@ -7,7 +7,7 @@ from .polycam import camera_matrix
 from .localization import pose_dict
 
 
-def read_photo(path, max_edge=1280):
+def read_photo(path, max_edge=1600):
     try:
         from pillow_heif import register_heif_opener
         register_heif_opener()
@@ -15,7 +15,7 @@ def read_photo(path, max_edge=1280):
         pass
     with Image.open(path) as im:
         if im.width*im.height > 65_000_000:
-            raise ValueError('照片太大，请先导出为不超过 6500 万像素的 JPG。')
+            raise ValueError('The photo is too large. Export it as a JPG with no more than 65 million pixels.')
         exif = im.getexif()
         extra = exif.get_ifd(34665) if 34665 in exif else {}
         focal35 = extra.get(41989, exif.get(41989))
@@ -37,16 +37,16 @@ def read_photo(path, max_edge=1280):
 
 def validate_calibration(c):
     if not isinstance(c, dict):
-        raise ValueError('相机参数文件必须是 JSON 对象。')
+        raise ValueError('The camera parameters file must be a JSON object.')
     for key in ['width', 'height', 'fx', 'fy', 'cx', 'cy']:
         if key not in c or not isinstance(c[key], (int, float)) or not np.isfinite(c[key]):
-            raise ValueError(f'相机参数缺少有效的 {key}。')
+            raise ValueError(f'The camera parameters are missing a valid {key}.')
     if int(c['width']) != c['width'] or int(c['height']) != c['height'] or min(c['width'], c['height']) < 32:
-        raise ValueError('相机 width、height 必须是有效的像素尺寸。')
+        raise ValueError('Camera width and height must be valid pixel dimensions.')
     camera_matrix(c)
     d = np.array(c.get('distortion', [0, 0, 0, 0, 0]), dtype=float)
     if d.ndim != 1 or len(d) not in [4, 5, 8, 12, 14] or not np.isfinite(d).all():
-        raise ValueError('畸变参数格式不正确。')
+        raise ValueError('The distortion parameters have an invalid format.')
     return {k: c[k] for k in ['width', 'height', 'fx', 'fy', 'cx', 'cy']} | {'distortion': d.tolist()}
 
 
@@ -54,32 +54,32 @@ def intrinsics_for_photo(metadata, mode='auto', calibration=None):
     w, h = metadata['processing_width'], metadata['processing_height']
     if mode == 'saved':
         if calibration is None:
-            raise ValueError('还没有保存相机参数，请先导入 JSON，或选择自动估算。')
+            raise ValueError('No camera parameters have been saved. Import a JSON file or select automatic estimation.')
         c = validate_calibration(calibration)
         original_ratio = metadata['width']/metadata['height']
         if abs(original_ratio/(c['width']/c['height'])-1) > .005:
-            raise ValueError('照片方向或宽高比与保存的相机参数不同。请更换对应参数，或选择自动估算。')
+            raise ValueError('The photo orientation or aspect ratio differs from the saved camera parameters. Use matching parameters or select automatic estimation.')
         K = camera_matrix(c)
         sx, sy = w/c['width'], h/c['height']
         K[0, 0] *= sx;K[1, 1] *= sy
         K[0, 2] = (K[0, 2]+.5)*sx-.5
         K[1, 2] = (K[1, 2]+.5)*sy-.5
-        return [K], np.array(c['distortion']), dict(source='saved', label='已保存的相机参数', estimated=False,
-            note='仅对相同镜头、相同裁剪和方向复用。')
+        return [K], np.array(c['distortion']), dict(source='saved', label='Saved camera parameters', estimated=False,
+            note='Reuse only with the same lens, crop, and orientation.')
     if mode != 'auto':
-        raise ValueError('未知的相机参数模式。')
+        raise ValueError('Unknown camera parameter mode.')
     focal35 = metadata.get('focal_35mm')
     if focal35:
         # A 35mm-equivalent focal length refers to the full-frame diagonal.
         f = focal35*np.hypot(w, h)/np.hypot(36, 24)
-        focals = [f*.9, f, f*1.1]
-        label = f'照片焦距参考（{focal35:g} mm）'
+        focals = [f*.82, f, f*1.18]
+        label = f'Photo focal-length reference ({focal35:g} mm)'
     else:
-        focals = np.array([.55, .70, .90, 1.15, 1.45])*max(w, h)
-        label = '根据图片匹配估算'
+        focals = np.array([.42, .52, .62, .72, .85, 1.00, 1.20, 1.45])*max(w, h)
+        label = 'Estimated from image matching'
     candidates = [np.array([[f, 0, (w-1)/2], [0, f, (h-1)/2], [0, 0, 1]], float) for f in focals]
     return candidates, np.zeros(5), dict(source='exif' if focal35 else 'search', label=label, estimated=True,
-        note='相机参数为估算值；建议导入标定参数后确认定位精度。')
+        note='The camera parameters are estimates; import calibration parameters to verify localization accuracy.')
 
 
 def refine_focal(result, image_size):

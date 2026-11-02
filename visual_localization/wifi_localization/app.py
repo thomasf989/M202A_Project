@@ -64,19 +64,20 @@ class LocalApp:
     def __init__(self, data, output, db_path=None):
         self.capture = load_capture(data)
         if not self.capture.glb.is_file():
-            raise ValueError('缺少 room.glb，请先导入房间模型。')
+            raise ValueError('room.glb is missing. Import a room model first.')
         self.output = Path(output).resolve()
         self.output.mkdir(parents=True, exist_ok=True)
         self.db_path = Path(db_path).resolve() if db_path else self.output / 'database'
         self.config_path = self.output / 'camera.json'
         self.calibration = validate_calibration(read_json(self.config_path)) if self.config_path.exists() else None
         self.lock = threading.RLock()
-        self.state = dict(phase='starting', message='正在读取房间模型…', progress=0, ready=False)
+        self.state = dict(phase='starting', message='Reading the room model…', progress=0, ready=False)
         self.jobs = {}
         self.scene = None
         self.db = None
         self.learned = None
         self.retriever = None
+        self.pipeline = None
         self.sample_index = 0
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix='room-localizer')
         self.initialization = None
@@ -92,32 +93,48 @@ class LocalApp:
     def _initialize(self):
         try:
             mesh = mesh_trace(self.capture.glb)
-            mesh.update(opacity=.90, name='房间模型')
+            mesh.update(opacity=.90, name='Room model')
             ids = getattr(self.capture, 'reference_ids', self.capture.ids)
             centers = np.array([self.capture.frames[id].T_world_cv[:3, 3] for id in ids])
             figure = go.Figure([mesh, go.Scatter3d(x=centers[:, 0], y=centers[:, 1], z=centers[:, 2],
-                mode='markers', name='扫描相机', visible=False, text=ids,
+                mode='markers', name='Scan cameras', visible=False, text=ids,
                 marker=dict(size=3, color='#6b8d88'), hoverinfo='text')])
             vertices = np.column_stack([mesh.x, mesh.y, mesh.z])
             figure.update_layout(meta=dict(bounds=[vertices.min(axis=0).tolist(), vertices.max(axis=0).tolist()]))
             self.scene = figure.to_json().encode()
-            if not (self.db_path/'database.json').is_file():
-                self._state(phase='building', message='首次使用：正在建立房间参考库…', progress=0)
+            def build_reference_database(message='First use: building the room reference library…'):
+                self._state(phase='building', message=message, progress=0)
+                if self.db_path.exists():
+                    shutil.rmtree(self.db_path)
                 def progress(done, total):
-                    self._state(progress=done/total, message=f'正在建立参考库：{done}/{total} 张照片')
+                    self._state(progress=done/total, message=f'Building reference library: {done}/{total} photos')
                 build_database(self.capture, self.db_path, query_every=None, progress=progress)
-            self._state(phase='loading', message='正在加载定位参考库…', progress=.98)
-            self.db = Database(self.db_path, self.capture)
-            self._state(phase='ready', message='房间已就绪，可以放入照片', progress=1, ready=True)
+            if not (self.db_path/'database.json').is_file():
+                build_reference_database()
+            self._state(phase='loading', message='Loading the localization reference library…', progress=.98)
+            try:
+                self.db = Database(self.db_path, self.capture)
+            except ValueError as e:
+                # Algorithm/map-depth upgrades intentionally change the capture
+                # fingerprint. Rebuild stale feature databases automatically
+                # instead of leaving an existing uploaded room unusable.
+                if 'fingerprint' in str(e).lower() or 'changed' in str(e).lower() or 'Rebuild' in str(e):
+                    build_reference_database('A localization algorithm or map-depth upgrade was detected. Rebuilding the reference library automatically…')
+                    self.db = Database(self.db_path, self.capture)
+                else:
+                    raise
+            from .pipeline import LocalizationPipeline
+            self.pipeline = LocalizationPipeline(self.capture, self.db, self.output/'robust_features')
+            self._state(phase='ready', message='The room is ready. You can add a photo.', progress=1, ready=True)
         except Exception as e:
-            self._state(phase='error', message=f'初始化失败：{e}', ready=False)
+            self._state(phase='error', message=f'Initialization failed: {e}', ready=False)
 
     def status(self):
         with self.lock:
             return dict(self.state, room_frames=len(self.capture.ids),
                 references=len(self.db.ids) if self.db else 0, has_calibration=self.calibration is not None,
                 dataset_format=getattr(self.capture, 'dataset_format', 'polycam'),
-                scene_name=getattr(self.capture, 'meta', {}).get('scene', '你的房间'),
+                scene_name=getattr(self.capture, 'meta', {}).get('scene', 'Your room'),
                 test_frames=len(getattr(self.capture, 'query_ids', [])),
                 calibration_size=([self.calibration['width'], self.calibration['height']] if self.calibration else None))
 
@@ -128,18 +145,18 @@ class LocalApp:
             self.calibration = c
         return {'saved': True, 'width': c['width'], 'height': c['height']}
 
-    def submit(self, image_bytes=None, filename='photo', mode='auto', sample=False, multiset_pose_bytes=None):
+    def submit(self, image_bytes=None, filename='photo', mode='auto', sample=False, multiset_pose_bytes=None, solver_mode='meshloc'):
         with self.lock:
             if not self.state['ready']:
-                raise ValueError('房间参考库还没准备好，请稍等。')
+                raise ValueError('The room reference library is not ready yet. Please wait.')
             if sum(j['status'] in ['queued', 'running'] for j in self.jobs.values()) >= 2:
-                raise ValueError('已有定位任务正在处理，请等待完成。')
+                raise ValueError('A localization job is already running. Please wait for it to finish.')
             id = uuid.uuid4().hex
             folder = self.output/'queries'/id
             folder.mkdir(parents=True, exist_ok=True)
             if not sample:
                 if not image_bytes:
-                    raise ValueError('请先选择一张照片。')
+                    raise ValueError('Select a photo first.')
                 (folder/'source.image').write_bytes(image_bytes)
             if multiset_pose_bytes:
                 if len(multiset_pose_bytes) > 1024*1024:
@@ -150,27 +167,30 @@ class LocalApp:
                 except Exception as e:
                     raise ValueError(f'MultiSet pose JSON is invalid: {e}') from e
                 write_json(folder/'multiset_pose.json',baseline)
-            self.jobs[id] = dict(id=id, status='queued', message='等待定位…', progress=0,
-                filename=Path(filename).name[:160], sample=sample)
+            solver_mode=str(solver_mode or 'meshloc').lower()
+            if solver_mode not in {'meshloc','meshloc-paper','auto','legacy'}:
+                raise ValueError('Unknown localization algorithm mode.')
+            self.jobs[id] = dict(id=id, status='queued', message='Waiting to localize…', progress=0,
+                filename=Path(filename).name[:160], sample=sample, solver_mode=solver_mode)
             calibration = dict(self.calibration) if self.calibration else None
-            self.worker.submit(self._process, id, mode, sample, calibration)
+            self.worker.submit(self._process, id, mode, sample, calibration, solver_mode)
             return dict(self.jobs[id])
 
     def job(self, id):
         with self.lock:
             if id not in self.jobs:
-                raise KeyError('找不到这次定位任务。')
+                raise KeyError('This localization job could not be found.')
             return dict(self.jobs[id])
 
     def _update_job(self, id, **kwargs):
         with self.lock:
             self.jobs[id].update(kwargs)
 
-    def _process(self, id, mode, sample, calibration):
+    def _process(self, id, mode, sample, calibration, solver_mode):
         folder = self.output/'queries'/id
         started = time.perf_counter()
         try:
-            self._update_job(id, status='running', progress=.1, message='正在读取照片…')
+            self._update_job(id, status='running', progress=.1, message='Reading the photo…')
             excluded = set()
             seven = getattr(self.capture, 'dataset_format', '') == '7-scenes'
             benchmark_frame = None
@@ -187,8 +207,8 @@ class LocalApp:
                 # The selected sample is already <=1280 px and is undistorted.
                 candidates, distortion = [frame.K], np.zeros(5)
                 camera = dict(source='7-scenes' if seven else 'sample',
-                              label='7-Scenes RGB 近似参数' if seven else '示例照片的已知相机参数', estimated=seven,
-                              note='来自官方测试序列，未加入参考库；RGB 焦距采用数据集常用近似值。' if heldout else '示例来自参考照片，仅用于演示；匹配时会排除这张原图。')
+                              label='Approximate 7-Scenes RGB parameters' if seven else 'Known camera parameters for the sample photo', estimated=seven,
+                              note='From the official test sequence and not included in the reference library; the RGB focal length uses a common dataset approximation.' if heldout else 'The sample comes from the reference photos and is for demonstration only; the original image is excluded during matching.')
                 query_hash = sha256(frame.image)
                 # Interactive sample: reject the exact frame by hash, while using
                 # neighboring references. Temporal exclusions belong to evaluation.
@@ -196,12 +216,12 @@ class LocalApp:
             else:
                 rgb, metadata = read_photo(folder/'source.image')
                 if mode == 'dataset':
-                    if not seven:raise ValueError('当前房间不是 7-Scenes，请选择自动估算或导入标定参数。')
+                    if not seven:raise ValueError('The current room is not a 7-Scenes room. Select automatic estimation or import calibration parameters.')
                     if (metadata['width'],metadata['height'])!=(640,480):
-                        raise ValueError('7-Scenes 参数只适用于未裁剪的 640×480 数据集照片。手机照片请选择自动估算或导入标定。')
+                        raise ValueError('7-Scenes parameters apply only to uncropped 640×480 dataset photos. For phone photos, select automatic estimation or import calibration.')
                     candidates,distortion,_=intrinsics_for_photo(metadata,'saved',self.capture.profile)
-                    camera=dict(source='7-scenes',label='7-Scenes RGB 近似参数',estimated=True,
-                        note='RGB 焦距采用数据集常用近似值；不是实测相机标定。')
+                    camera=dict(source='7-scenes',label='Approximate 7-Scenes RGB parameters',estimated=True,
+                        note='The RGB focal length uses a common dataset approximation; it is not a measured camera calibration.')
                 else:
                     candidates, distortion, camera = intrinsics_for_photo(metadata, mode, calibration)
                 query_hash = sha256(folder/'source.image')
@@ -210,59 +230,29 @@ class LocalApp:
             if np.any(distortion):
                 rgb = cv2.undistort(rgb, candidates[0], distortion, None, candidates[0])
             Image.fromarray(rgb).save(folder/'query.jpg', quality=92)
-            self._update_job(id, progress=.3, message='正在匹配房间特征并计算拍照位置…',
+            self._update_job(id, progress=.3, message='Matching room features and calculating the camera position…',
                 preview_url=f'/results/{id}/query.jpg')
-            # Preferred hierarchy: DINOv2 global retrieval -> ALIKED/LightGlue
-            # -> depth/mesh 3D correspondences -> PnP/RANSAC. MultiSet is never
-            # used inside this solver; it can only be attached later as a baseline.
-            result = None
-            enhanced_errors = []
-            try:
-                def enhanced_progress(message, fraction):
-                    self._update_job(id, progress=fraction, message=message)
-                if self.learned is None:
-                    from .learned import LearnedLocalizer
-                    self.learned = LearnedLocalizer(self.capture,self.db.ids,self.output/'learned_features',enhanced_progress)
-                else:
-                    self.learned.progress = enhanced_progress
-                ranking = None
-                retrieval_method = None
-                try:
-                    if self.retriever is None:
-                        from .retrieval import DinoV2Retriever
-                        self.retriever = DinoV2Retriever(self.capture,self.db.ids,self.output/'global_features',progress=enhanced_progress)
-                    else:
-                        self.retriever.progress = enhanced_progress
-                    ranking = self.retriever.rank(rgb, excluded)
-                    retrieval_method = 'DINOv2 global retrieval'
-                except Exception as e:
-                    enhanced_errors.append(f'DINOv2 retrieval: {e}')
-                    # Still keep learned local matching: use the existing
-                    # RootSIFT database only to shortlist candidate views.
-                    _, root_desc = extract(rgb, self.db.meta['nfeatures'])
-                    ranking = self.db.rank(root_desc, excluded)
-                    retrieval_method = 'RootSIFT TF-IDF retrieval (learned local matching)'
-                result = self.learned.localize(rgb,candidates,excluded,query_hash,
-                    self.db.meta['reference_image_hashes'],candidate_ranking=ranking,top_k=16,
-                    retrieval_method=retrieval_method,settings=Settings(top_k=16))
-            except Exception as e:
-                enhanced_errors.append(f'Learned matcher: {e}')
-
-            # CPU baseline is retained as a reproducible fallback/ablation and
-            # is also tried when the learned hierarchy cannot return a pose.
-            if result is None or not result.get('success'):
-                learned_attempt = result
-                baseline = localize(self.capture, self.db, rgb, candidates[0], Settings(), excluded,
-                                    query_hash, candidate_intrinsics=candidates)
-                baseline['method'] = 'RootSIFT + visual-word TF-IDF + depth PnP (CPU baseline)'
-                if learned_attempt is not None:
-                    baseline['learned_attempt'] = {k:learned_attempt.get(k) for k in
-                        ['method','reason','query_features','correspondences','inliers','pose_confidence','retrieval_method','retrieval']}
-                result = baseline if baseline.get('success') or learned_attempt is None else learned_attempt
-            if enhanced_errors:
-                result['enhancement_warnings'] = enhanced_errors
-                if not result.get('success'):
-                    result['enhancement_help'] = 'Learned retrieval/matching was unavailable or insufficient; the CPU baseline was also attempted.'
+            # Robust hierarchy: multi-crop DINOv2 -> pose-neighbour expansion
+            # -> ALIKED/LightGlue + F-RANSAC -> metric PnP, with a hybrid SIFT
+            # fallback on the same shortlist. MultiSet is never used inside
+            # this solver; it remains only an optional external baseline.
+            def enhanced_progress(message, fraction):
+                self._update_job(id, progress=fraction, message=message)
+            if self.pipeline is None:
+                from .pipeline import LocalizationPipeline
+                self.pipeline = LocalizationPipeline(self.capture, self.db, self.output/'robust_features', enhanced_progress)
+            else:
+                self.pipeline.progress = enhanced_progress
+            robust_settings = Settings(top_k=20, ratio=.78, reprojection_px=5.,
+                                       min_inliers=10, min_inlier_ratio=.08,
+                                       iterations=6000, seed=42)
+            result = self.pipeline.localize(rgb, candidates, excluded, query_hash,
+                                            settings=robust_settings, enhanced=True,
+                                            solver_mode=solver_mode)
+            if not result.get('success'):
+                result['enhancement_help'] = (
+                    'No reliable pose yet. Check reference coverage, use the same physical room/model, '
+                    'and prefer photos containing textured walls/furniture rather than a blank wall.')
             if camera['estimated'] and camera['source'] != '7-scenes':
                 refine_focal(result, (rgb.shape[1], rgb.shape[0]))
             if seven:
@@ -285,10 +275,10 @@ class LocalApp:
                     result.update(compare_to_multiset(result,read_json(multiset_path)))
                 except Exception as e:
                     result['multiset_error']=str(e)
-            result.update(query_id=self.jobs[id]['filename'], photo_metadata=metadata, camera=camera, sample=sample)
+            result.update(query_id=self.jobs[id]['filename'], photo_metadata=metadata, camera=camera, sample=sample, requested_solver_mode=solver_mode)
             result['urls'] = dict(preview=f'/results/{id}/query.jpg', pose=f'/results/{id}/pose.json')
             if result['success']:
-                self._update_job(id, progress=.85, message='正在把拍照位置标到房间模型里…')
+                self._update_job(id, progress=.85, message='Marking the camera position in the room model…')
                 export_marked_glb(self.capture, result, folder/'localized_room.glb')
                 scene_html(self.capture, folder/'localization.html', [result], self.db.ids)
                 overlay = Image.fromarray(rgb)
@@ -301,9 +291,9 @@ class LocalApp:
             result['total_seconds'] = time.perf_counter()-started
             write_json(folder/'pose.json', result)
             self._update_job(id, status='done', progress=1,
-                message='已找到拍照位置' if result['success'] else '这张照片暂时无法可靠定位', result=result)
+                message='Camera position found' if result['success'] else 'This photo could not be localized reliably', result=result)
         except Exception as e:
-            self._update_job(id, status='error', progress=1, message=f'处理失败：{e}')
+            self._update_job(id, status='error', progress=1, message=f'Processing failed: {e}')
 
     def close(self):
         self.worker.shutdown(wait=True, cancel_futures=True)
@@ -388,9 +378,9 @@ class Handler(BaseHTTPRequestHandler):
         try:length = int(self.headers.get('Content-Length', 0))
         except ValueError:raise ValueError('Invalid content length')
         if not 0 < length <= maximum:
-            raise ValueError('上传内容为空或超过 40 MB。请先把照片导出为 JPG。')
+            raise ValueError('The upload is empty or exceeds 40 MB. Export the photo as a JPG first.')
         body=self.rfile.read(length)
-        if len(body)!=length:raise ValueError('上传中断，请重试。')
+        if len(body)!=length:raise ValueError('The upload was interrupted. Please try again.')
         return body
 
     def do_PUT(self):
@@ -417,21 +407,22 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == '/api/calibration':
                 self.respond(200, app.save_calibration(json.loads(body)))
             elif self.path == '/api/sample':
-                self.respond(202, app.submit(sample=True, filename='示例照片'))
+                self.respond(202, app.submit(sample=True, filename='Sample photo', solver_mode='meshloc'))
             elif self.path == '/api/localize':
                 content_type = self.headers.get('Content-Type', '')
                 if not content_type.startswith('multipart/form-data;'):
-                    raise ValueError('请选择照片后再定位。')
+                    raise ValueError('Select a photo before starting localization.')
                 message = BytesParser(policy=email_policy).parsebytes(
                     f'Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n'.encode()+body)
-                file, mode, filename, multiset_pose = None, 'auto', 'photo', None
-                if not message.is_multipart():raise ValueError('上传格式不正确。')
+                file, mode, filename, multiset_pose, solver_mode = None, 'auto', 'photo', None, 'meshloc'
+                if not message.is_multipart():raise ValueError('The upload format is invalid.')
                 for part in message.iter_parts():
                     name = part.get_param('name', header='content-disposition')
                     if name == 'image':file=part.get_payload(decode=True);filename=part.get_filename() or filename
                     elif name == 'mode':mode=part.get_payload(decode=True).decode()
                     elif name == 'multiset_pose':multiset_pose=part.get_payload(decode=True)
-                self.respond(202, app.submit(file, filename, mode, multiset_pose_bytes=multiset_pose))
+                    elif name == 'solver_mode':solver_mode=part.get_payload(decode=True).decode()
+                self.respond(202, app.submit(file, filename, mode, multiset_pose_bytes=multiset_pose, solver_mode=solver_mode))
             else:self.respond(404, {'error':'Not found'})
         except (ValueError, OSError, KeyError) as e:
             self.respond(400, {'error': str(e)})
@@ -449,16 +440,16 @@ def run_app(data='data/room', output='outputs/app', port=8765, open_browser=True
             continue
     if server is None:
         app.close()
-        raise OSError('端口不可用，请关闭旧程序或使用 --port 选择其他端口。')
+        raise OSError('The port is unavailable. Close the previous program or use --port to select another port.')
     url = f'http://127.0.0.1:{server.server_port}'
-    print(f'\n房间照片定位已启动：{url}\n照片仅在本机处理。关闭程序请在终端按 Control+C。\n', flush=True)
+    print(f'\nRoom photo localization started: {url}\nPhotos are processed locally only. Press Control+C in the terminal to stop the program.\n', flush=True)
     app.start()
     if open_browser:
         threading.Timer(.8, lambda: webbrowser.open(url)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print('\n正在关闭…', flush=True)
+        print('\nShutting down…', flush=True)
     finally:
         server.server_close()
         app.close()
@@ -469,16 +460,16 @@ def run_web(output='outputs/web',port=8765,open_browser=True,initial=None):
     cv2.setNumThreads(2)
     project=Path(__file__).resolve().parent.parent
     builtins={
-        'polycam':dict(name='我的房间 · Polycam',data=project/'data/room',output=project/'outputs/app'),
+        'polycam':dict(name='My Room · Polycam',data=project/'data/room',output=project/'outputs/app'),
         'chess':dict(name='Chess · 7-Scenes',data=project/'data/seven_scenes/chess',output=project/'outputs/7scenes_chess')}
     app=RoomHub(output,builtins,initial)
     server=None
     for candidate in range(port,port+10):
         try:server=LocalServer(('127.0.0.1',candidate),app);break
         except OSError:continue
-    if server is None:app.close();raise OSError('端口不可用，请关闭旧程序或使用 --port 选择端口。')
+    if server is None:app.close();raise OSError('The port is unavailable. Close the previous program or use --port to select a port.')
     url=f'http://127.0.0.1:{server.server_port}'
-    print(f'\n房间上传与定位网页：{url}\n在页面添加 GLB 和参考 ZIP。退出请按 Control+C。\n',flush=True)
+    print(f'\nRoom upload and localization page: {url}\nAdd a GLB and reference ZIP on the page. Press Control+C to exit.\n',flush=True)
     app.start()
     if open_browser:threading.Timer(.8,lambda:webbrowser.open(url)).start()
     try:server.serve_forever()

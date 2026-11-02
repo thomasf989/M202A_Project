@@ -5,6 +5,7 @@ __pycache__/
 data/
 outputs/
 sample_results/
+synthetic_refs_random/
 *.zip
 .pytest_cache/
 .coverage
