@@ -10,3 +10,10 @@ synthetic_refs_random/
 .pytest_cache/
 .coverage
 *.tmp
+ios/WalkingBaseline/Generated/
+ios/WalkingBaseline/*.xcodeproj/
+ios/WalkingBaseline/DerivedData/
+ios/WalkingBaseline/Vendor/
+ios/WalkingBaseline/Resources/Room/
+ios/WalkingBaseline/DerivedData-device/
+*.wifiroom

@@ -1,0 +1,3 @@
+-r requirements.txt
+# Accelerated geometric checks while preparing offline Polycam references.
+embreex>=4.3,<5

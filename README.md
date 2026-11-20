@@ -46,3 +46,13 @@ The balanced preset uses multiple camera heights, full yaw coverage, several pit
 ## v6 MeshLoc audit
 
 The visual localization module now includes audited MeshLoc-style depth lifting, near-plane clipping, 20 px paper-baseline RANSAC settings, robust position refinement, hybrid synthetic-domain retrieval, explicit no-fallback MeshLoc evaluation modes, and expanded tests. See `visual_localization/docs/MESHLOC_V6_FIXES.md`.
+
+## Offline iPhone Wi-Fi explorer
+
+[`ios/WalkingBaseline`](ios/WalkingBaseline/README.md) adds an entirely on-device
+RootSIFT/PnP localizer, ARKit walking, scanned-surface Wi-Fi inspection, and an
+importable multi-room library. Prepare a scan once using
+[`tools/prepare_iphone_room.py`](tools/prepare_iphone_room.py), then import its
+`.wifiroom` package into the iPhone app. Real Wi-Fi survey data must be collected
+separately. This mobile build uses the CPU baseline, not the desktop MeshLoc
+neural pipeline; physical-iPhone validation is still required.
