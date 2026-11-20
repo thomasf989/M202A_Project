@@ -46,7 +46,7 @@ struct ExplorerView: View {
                     HStack {
                         Button(action:controller.locate) {
                             HStack {if controller.busy {ProgressView()};Text(controller.aligned ? "Relocate" : "Locate me")}
-                        }.disabled(!controller.ready || controller.busy)
+                        }.disabled(!controller.ready || controller.busy || !controller.supportsAR)
                         Button("Reset",action:controller.reset)
                     }.buttonStyle(.borderedProminent)
                 }.padding().background(.regularMaterial,in:RoundedRectangle(cornerRadius:18))

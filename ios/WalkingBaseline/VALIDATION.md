@@ -10,6 +10,7 @@ committed to Git. No changes are made to main.
 ## Completed checks
 
 - Unsigned physical-iPhone build with Xcode 27.2 and OpenCV 5.1.0: passed.
+- Simulator build and UI launch: passed; the bundled room and no-survey state displayed.
 - Swift core executable: 13 checks passed (interpolation, no coverage, map mismatch,
   nonfinite values, nearest-surface picking, no arbitrary depth, capture-time pose,
   invalid transform, real package import, repeat import, checksum and truncation).

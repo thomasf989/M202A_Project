@@ -27,6 +27,7 @@ final class ExplorerController: NSObject, ObservableObject, ARSessionDelegate {
     private let worker = DispatchQueue(label: "offline.localizer", qos: .userInitiated)
     private var localizer: OfflineLocalizer? // only read/written on worker
     private let ciContext = CIContext()
+    var supportsAR: Bool { ARWorldTrackingConfiguration.isSupported }
 
     @Published var rooms: [RoomChoice] = []
     @Published var roomName = "No room selected"
@@ -59,7 +60,7 @@ final class ExplorerController: NSObject, ObservableObject, ARSessionDelegate {
                        let saved=try? JSONDecoder().decode(WiFiSurvey.self,from:data).validated(for:model.mapID) {self.survey=saved}
                     self.ready=true;self.updateSurveyLabels()
                     UserDefaults.standard.set(model.mapID,forKey:"selectedRoom")
-                    self.status="Room ready. Move slowly, then Locate me."
+                    self.status=self.supportsAR ? "Room ready. Move slowly, then Locate me." : "Simulator: UI only. Use a physical iPhone to locate and walk."
                 }
             } catch {DispatchQueue.main.async {if self.roomLoadID==epoch {self.status=error.localizedDescription}}}
         }
